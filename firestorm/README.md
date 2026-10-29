@@ -95,10 +95,31 @@ length. The pod goes by the index: a 'Mech's place, from 1, in the console's
 list of every chassis alphabetically, each followed by its
 `resource\Variants` files (Loki 208, Loki B 211, Zeus 357); the launcher
 works it out from the 65 chassis and the variant files there, the same list
-the console builds. So the operator still puts each pod in a slot, but what
-they type there no longer matters: the pod flies the seated pilot, and their
-name is on its plasma sign and in the battle report. `[shim] log_net = 1`
-logs the CTCL traffic, for studying it.
+the console builds. The pod flies the seated pilot, and their name is on its
+plasma sign and in the battle report, whatever the console's slot says.
+
+**The console fills in its slots** too. Once its menu is up (3 s after its
+first frame), the console's shim does what the operator would: for each pod
+in `ctcl.ini`'s `[teslas]` with a pilot seated, in that order, it opens the
+next slot's player list, picks the pod, types the pilot's name and presses
+Enter, then sets the slot's 'Mech (the chassis - the console's list has no
+variants; the variant goes in at LOAD as above), camo and unit - with a
+pointer and keys of its own, fed to the game through `GetCursorPos`,
+`GetKeyState` and its window's messages, so the real mouse is not touched.
+Whoever runs the console sees what each pod will fly. Up to five pods (the
+player lists of lower slots open where it has not been measured);
+`[profiles] fill_console = 0` turns it off, `fill_delay_ms` changes the wait.
+On the launcher's Pilots page the console seats a pilot with the button on
+their row ("Seat in Pilot1"), or a pod's list under Seats.
+
+**Camo and unit.** A pilot has a camo (1-16) and a unit insignia (1-17) -
+the console's two numbered lists - picked on the Pilots page. The pictures
+there are read off the console once by `python tools/livery.py --game ...`
+(about a minute; it drives the console's slot 1 with the shim's pointer)
+into `profiles\livery` beside the game; without them the page offers the
+numbers. The camo and unit travel to the pod in the console's setup, so the
+shim finds a pod's slot there by its address alone. `[shim] log_net =
+1` logs the CTCL traffic, for studying it.
 
 It edits `shim.ini`, `options.ini` and `ctcl.ini` in place, keeping their
 comments and the keys it does not know, with the old file as `.bak`. It is
@@ -198,6 +219,11 @@ rio.py snap                   snapshot every display
 rio.py listen 30              print what the game tells the board: the lamps
 ```
 
+The console's menus, on its port (9101), with the shim's own pointer:
+`click X Y` (the menu's 800x600 coordinates), `chars TEXT` (typed into the
+box that has focus), `enter`, `vkey XX` (a key by virtual-key code: 24 Home,
+28 Down, 0D Enter alone), `pointer off` (the real mouse again).
+
 The board's protocol, its button numbers, and the lamps are in
 [docs/RIO.md](docs/RIO.md).
 
@@ -228,9 +254,12 @@ measurements [docs/MFD_STREAMING_IMPLEMENTATION.md](../docs/MFD_STREAMING_IMPLEM
 ## Resolution
 
 The main view's size is `options.ini`'s `screenwidth`/`screenheight` (and
-`bitdepth`, 16 or 32). The game knows six sizes, all 4:3: 512x384, 640x480,
-800x600, 1024x768, 1280x1024 and 1600x1200 (`0x426FC2`); any other is
-ignored and the menus' 800x600 kept. 1600x1200 runs well on a modern card -
+`bitdepth`, 16 or 32); the pod switches to it at LAUNCH, its menus run at
+800x600. The game knows five mission sizes, all 4:3: 640x480, 800x600,
+1024x768, 1280x1024 and 1600x1200 - the options loader turns the width into
+one of five (`0x53A6A8`) and the size is made from that (`0x556965`); any
+other width is ignored and 800x600 kept. Wider shapes are being worked on:
+[docs/WIDESCREEN.md](docs/WIDESCREEN.md). 1600x1200 runs well on a modern card -
 at `bitdepth=16`: at 32 the MFD device can no longer make its surfaces
 (out of memory, `8007000E`) and the MFDs stay black. On a wide screen,
 `[main] fullscreen = 1` fills it with the view centred between black bars. The console's menus are 800x600 whatever is set.

@@ -163,7 +163,7 @@
           <div class="card only-console" id="seating">
             <h3>Pods</h3>
             <div id="seats"></div>
-            <p class="hint">Seat a pilot in a pod: at the next LOAD the console's slot for that pod takes the pilot's name and 'Mech, whatever the operator chose for it. The operator still puts the pod in a slot.</p>
+            <p class="hint">Seat a pilot in a pod: when the console starts it puts the pod in a slot with the pilot's name, 'Mech, camo and unit, and at LOAD the pod gets the exact variant. Seats made after the console has started reach the pod at LOAD, but not the console's screen until it starts again.</p>
           </div>
         </div>
         <div class="card editor">
@@ -173,6 +173,8 @@
           <div class="row"><label>Name</label><input id="ed-name" maxlength="15" placeholder="Callsign"></div>
           <div class="row"><label>'Mech</label><select id="ed-chassis"></select></div>
           <div class="row"><label>Variant</label><select id="ed-variant"></select></div>
+          <div class="row top"><label>Camo</label><div class="swatches" id="ed-camo"></div></div>
+          <div class="row top"><label>Unit</label><div class="swatches" id="ed-unit"></div></div>
           <div class="row"><label>Notes</label><input id="ed-notes" class="wide" maxlength="200"></div>
           <div class="row"><label></label>
             <button class="btn primary" id="ed-save">Save pilot</button>

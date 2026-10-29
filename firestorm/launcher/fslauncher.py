@@ -35,7 +35,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 START = int(time.time())
 # What the page may borrow from the game folder: its fonts and pictures.
-GAME_FILES = re.compile(r"^hsh/(Mechs/[^/\\]+\.bmp|fonts/[^/\\]+\.ttf|logo\.bmp|mr_background\.bmp)$", re.I)
+GAME_FILES = re.compile(r"^(hsh/(Mechs/[^/\\]+\.bmp|fonts/[^/\\]+\.ttf|logo\.bmp|mr_background\.bmp)"
+                        r"|profiles/livery/(camo|unit)_\d\d\.png)$", re.I)
+# The console's camo and unit lists (its slot's two numbered lists). Their
+# pictures are read off the console by tools/livery.py into profiles\livery.
+CAMOS, UNITS = 16, 17
 WEB = os.path.join(HERE, "web")
 MODES = [(512, 384), (640, 480), (800, 600), (1024, 768), (1280, 1024), (1600, 1200)]
 # The game knows only these (MW4.exe 0x426FC2); anything else is ignored.
@@ -585,7 +589,17 @@ class Pilots:
             if v:
                 groups[c].append({"file": v, "label": v[len(c):].strip()})
         return {"chassis": [c for c in sorted(CHASSIS, key=str.lower)], "variants": groups,
-                "images": mech_images(self.game), "specs": self.specs()}
+                "images": mech_images(self.game), "specs": self.specs(), "livery": self.livery()}
+
+    def livery(self):
+        """The camo and unit pictures tools/livery.py read off the console:
+        a /game/ path for each number that has one."""
+        d = os.path.join(self.dir, "livery")
+
+        def pics(kind, n):
+            return {i: "profiles/livery/%s_%02d.png" % (kind, i) for i in range(1, n + 1)
+                    if os.path.exists(os.path.join(d, "%s_%02d.png" % (kind, i)))}
+        return {"camos": CAMOS, "units": UNITS, "camo": pics("camo", CAMOS), "unit": pics("unit", UNITS)}
 
     def specs(self):
         """What tools/mechcat.py read off the game's own screens, by 'Mech
@@ -637,7 +651,16 @@ class Pilots:
             else:
                 cur = {"id": "%x" % int(time.time() * 1000), "created": time.strftime("%Y-%m-%d"), "matches": 0}
                 r.append(cur)
-            cur.update(name=name, chassis=chassis, variant=variant, notes=(p.get("notes") or "")[:200])
+            def number(key, top):
+                try:
+                    v = int(p.get(key) or 1)
+                except (TypeError, ValueError):
+                    raise ValueError("%s is a number" % key)
+                if not 1 <= v <= top:
+                    raise ValueError("%s is 1 to %d" % (key, top))
+                return v
+            cur.update(name=name, chassis=chassis, variant=variant, notes=(p.get("notes") or "")[:200],
+                       camo=number("camo", CAMOS), unit=number("unit", UNITS))
             self._write_roster(r)
             # A pilot already seated takes their new 'Mech into the next match.
             for ip, s in self.seats().items():
@@ -666,8 +689,13 @@ class Pilots:
                 del ini.lines[r[0]:r[1]]
         if prof:
             mech = prof["variant"] or prof["chassis"]
+            # chassis_pos, camo and unit are for the console's own lists, which
+            # its shim fills in at start (README, Profiles): the chassis' place
+            # among the 65 as the console lists them, alphabetically.
             ini.lines += ["[%s]" % ip, "profile=%s" % prof["id"], "name=%s" % prof["name"], "mech=%s" % mech,
-                          "mech_index=%d" % self.index_of(prof["chassis"], prof["variant"]), ""]
+                          "mech_index=%d" % self.index_of(prof["chassis"], prof["variant"]),
+                          "chassis_pos=%d" % (sorted(CHASSIS, key=str.lower).index(prof["chassis"]) + 1),
+                          "camo=%d" % prof.get("camo", 1), "unit=%d" % prof.get("unit", 1), ""]
         ini.save()
 
     def seat(self, ip, pid):
@@ -719,7 +747,7 @@ def make_handler(app):
                 f = os.path.join(app.game, *rel.split("/"))
                 if not os.path.isfile(f):
                     return self.send(404, {"error": "not found"})
-                ctype = "image/bmp" if f.lower().endswith(".bmp") else "font/ttf"
+                ctype = {".bmp": "image/bmp", ".png": "image/png"}.get(os.path.splitext(f)[1].lower(), "font/ttf")
                 with open(f, "rb") as fh:
                     data = fh.read()
                 self.send_response(200)

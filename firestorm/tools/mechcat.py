@@ -370,7 +370,15 @@ def main():
     tes = [k for k, v in ctcl.items("teslas") if not k.startswith(("#", "*"))]
     pod_ip = tes[0]
     assign = os.path.join(prof, "assign.ini")
-    keep = open(assign, encoding="latin-1").read() if os.path.exists(assign) else None
+    # The seats as they were, kept in a file until the run ends: a run that is
+    # killed leaves its own seat in assign.ini, and the next run must put back
+    # the original, not that.
+    saved = assign + ".mechcat"
+    if not os.path.exists(saved):
+        with open(saved, "w", encoding="latin-1") as f:
+            f.write(open(assign, encoding="latin-1").read() if os.path.exists(assign) else "(no assign.ini)")
+    keep = open(saved, encoding="latin-1").read()
+    keep = None if keep == "(no assign.ini)" else keep
 
     c = Centre(game)
     try:
@@ -420,10 +428,12 @@ def main():
                 stats.get("class"), len(weapons), "" if len(weapons) == nrows else " (rows %d)" % nrows))
     finally:
         if keep is None:
-            os.remove(assign)
+            if os.path.exists(assign):
+                os.remove(assign)
         else:
             with open(assign, "w", encoding="latin-1") as f:
                 f.write(keep)
+        os.remove(saved)
         c.stop()
 
 

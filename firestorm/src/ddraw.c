@@ -2096,7 +2096,7 @@ static int WINAPI i_recv(UINT_PTR so, char *b, int n, int fl)
  *
  *   <pilot> 00 | 00 00 <index, 2 bytes big-endian> ff ff 00 xx |
  *   <Mech, or "Mech Variant" - a Resource\Variants file's name> 00 |
- *   7 zero bytes | 03 <the pod's IPv4 address> ...
+ *   7 bytes, the camo among them | 1 byte (the unit) | <the pod's IPv4 address> ...
  *
  * - "Loki" is the stock Loki, "Loki B" its B variant. The index is what the
  * pod goes by: the Mech's place, from 1, in the console's list - every
@@ -2129,8 +2129,7 @@ static int assign_slot(const BYTE *m, int n, const BYTE ip[4], BYTE *out, int ro
 {
 	char ini[MAX_PATH], sec[20], name[64], mech[64];
 	int idx;
-	BYTE mark[5] = { 3, ip[0], ip[1], ip[2], ip[3] };
-	int p, i, mech_end, mech_start, name_end, name_start, k, nl, ml, len;
+	int p, mech_end, mech_start, name_end, name_start, k, nl, ml, len;
 
 	if (n < 40 || m[2] != 0x14) return 0;
 	snprintf(ini, sizeof ini, "%sprofiles\\assign.ini", g_dir);
@@ -2140,12 +2139,13 @@ static int assign_slot(const BYTE *m, int n, const BYTE ip[4], BYTE *out, int ro
 	idx = (int)GetPrivateProfileIntA(sec, "mech_index", 0, ini);
 	if (mech[0] && idx <= 0) mech[0] = 0;		/* the pod goes by the index: without one, no change */
 	if (!name[0] && !mech[0]) return 0;
-	for (p = n - 5; p > 20; p--)			/* the last record for this address */
-		if (!memcmp(m + p, mark, 5)) break;
+	/* The last record for this address. The byte before it, and the seven
+	 * after the 'Mech's 00, are not fixed: the slot's camo and unit (from 0)
+	 * are among them - 03 and zeros only while the console's defaults stand. */
+	for (p = n - 5; p > 20; p--)
+		if (!memcmp(m + p + 1, ip, 4) && !m[p - 8] && m[p - 9]) break;
 	if (p <= 20) { say("profiles: no slot for %s in the setup", sec); return 0; }
 	mech_end = p - 8;			/* its 00, then seven more */
-	for (i = mech_end; i < p; i++)
-		if (m[i]) { say("profiles: the slot for %s is not as expected", sec); return 0; }
 	for (mech_start = mech_end; mech_start > 0 && m[mech_start - 1]; mech_start--) ;
 	name_end = mech_start - 9;
 	if (name_end < 1 || m[name_end]) { say("profiles: the slot for %s is not as expected", sec); return 0; }
@@ -2249,11 +2249,22 @@ static void client_box(struct dev *d, RECT *b)
 	if (b->right <= b->left || b->bottom <= b->top) SetRect(b, 0, 0, d->w, d->h);
 }
 
+/* The shim's own hand on the game's mouse: while g_fake_on, the game sees
+ * the pointer at g_fake_at (its own coordinates) and the left button as
+ * g_fake_down says - GetCursorPos and GetKeyState, which is how the menus
+ * read them - and the real mouse is left alone. For filling in the
+ * console's slots (below) and the control port's "click". */
+static volatile LONG g_fake_on, g_fake_down;
+static POINT g_fake_at;
+
 static BOOL WINAPI i_GetCursorPos(LPPOINT p)
 {
 	struct dev *d = main_dev();
-	BOOL r = o_GetCursorPos(p);
+	BOOL r;
 	RECT b;
+
+	if (g_fake_on) { *p = g_fake_at; return TRUE; }
+	r = o_GetCursorPos(p);
 
 	if (r && d && mouse_free()) {
 		if (g_mouse_at_set) *p = g_mouse_at;
@@ -2309,6 +2320,153 @@ static BOOL WINAPI i_ClipCursor(const RECT *r)
 	ClientToScreen(d->hwnd, &b);
 	SetRect(&c, a.x, a.y, b.x, b.y);
 	return o_ClipCursor(&c);
+}
+
+typedef SHORT (WINAPI *GetKeyState_t)(int);
+static GetKeyState_t o_GetKeyState;
+static SHORT WINAPI i_GetKeyState(int vk)
+{
+	if (g_fake_on && vk == VK_LBUTTON) return g_fake_down ? (SHORT)0x8000 : 0;
+	return o_GetKeyState(vk);
+}
+
+/* A click at (x, y) in the game's coordinates: the pointer there, the button
+ * down and up - in the state the game polls and in the messages it is sent. */
+static void fake_click(int x, int y)
+{
+	struct dev *d = main_dev();
+	RECT b;
+	LPARAM lp;
+
+	if (!d) return;
+	client_box(d, &b);
+	lp = MAKELPARAM(b.left + x * (b.right - b.left) / (LONG)d->w, b.top + y * (b.bottom - b.top) / (LONG)d->h);
+	g_fake_at.x = x;
+	g_fake_at.y = y;
+	InterlockedExchange(&g_fake_on, 1);
+	PostMessageA(d->hwnd, WM_MOUSEMOVE, 0, lp);
+	Sleep(150);
+	InterlockedExchange(&g_fake_down, 1);
+	PostMessageA(d->hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lp);
+	Sleep(150);
+	InterlockedExchange(&g_fake_down, 0);
+	PostMessageA(d->hwnd, WM_LBUTTONUP, 0, lp);
+	Sleep(150);
+}
+
+static void fake_done(void)
+{
+	InterlockedExchange(&g_fake_down, 0);
+	InterlockedExchange(&g_fake_on, 0);
+}
+
+/* Typing into whatever box has the game's focus: characters (WM_CHAR alone -
+ * the game makes characters of key-downs too, so both would type each one
+ * twice), then Enter. */
+static void fake_chars(const char *t)
+{
+	struct dev *d = main_dev();
+	if (!d) return;
+	for (; *t; t++) {
+		PostMessageA(d->hwnd, WM_CHAR, (BYTE)*t, 1 | (MapVirtualKeyA(VkKeyScanA(*t) & 0xFF, 0) << 16));
+		Sleep(40);
+	}
+}
+
+/* A key by virtual-key code (hex), down and up: arrows, Page Down ... */
+static void fake_vkey(UINT vk)
+{
+	struct dev *d = main_dev();
+	LPARAM lp;
+	if (!d) return;
+	lp = 1 | (MapVirtualKeyA(vk, 0) << 16);
+	PostMessageA(d->hwnd, WM_KEYDOWN, vk, lp);
+	PostMessageA(d->hwnd, WM_KEYUP, vk, lp | 0xC0000000);
+	Sleep(60);
+}
+
+static void fake_enter(void)
+{
+	struct dev *d = main_dev();
+	if (!d) return;
+	PostMessageA(d->hwnd, WM_KEYDOWN, VK_RETURN, 0x001C0001);
+	PostMessageA(d->hwnd, WM_CHAR, '\r', 0x001C0001);
+	PostMessageA(d->hwnd, WM_KEYUP, VK_RETURN, 0xC01C0001);
+	Sleep(150);
+}
+
+/* The console's slots, filled in from the seats. A pilot seated in a pod
+ * (profiles\assign.ini, from the launcher's Pilots page) used to reach the
+ * pod only at LOAD, and only if the operator had put that pod in a slot -
+ * the console's screen never showed them. Now, once the console's menu is up,
+ * its shim does what the operator would: for each pod in ctcl.ini's [teslas]
+ * with a pilot seated, in that order, the next slot's player list, the pod in
+ * it (the list is the pods in [teslas] order, then the bots), the name box,
+ * the pilot's name, Enter; then the slot's 'Mech list (the 65 chassis, in
+ * order: the seat's chassis_pos), camo (1-16) and unit (1-17) - each opened,
+ * Home, Down to the entry, Enter - so the console shows what the pod will
+ * fly. All with the shim's own pointer (fake_click), so the real mouse is not
+ * touched. The variant, which the console's list does not have, still goes
+ * in at LOAD (assign_slot).
+ * [profiles] fill_console = 0 turns it off; fill_delay_ms (3000) is how long
+ * after the menu's first frame. The places are the console's 800x600 menu:
+ * slot n's list button at (178, 92 + 49n), its entries 20 apart from 41
+ * below, its name box 25 below; its 'Mech list at (323, 92 + 49n), camo and
+ * unit numbers at (383, 101 + 49n) and (453, 101 + 49n). Five slots at most:
+ * lower ones' player lists open where it has not been measured. */
+static void fill_list(int x, int y, int n)
+{
+	int i;
+	if (n < 1) return;
+	fake_click(x, y);
+	Sleep(250);
+	fake_vkey(VK_HOME);
+	for (i = 1; i < n; i++) fake_vkey(VK_DOWN);
+	fake_vkey(VK_RETURN);		/* the key alone: a posted Enter character opens the list again */
+	Sleep(250);
+}
+
+static DWORD WINAPI fill_main(LPVOID unused)
+{
+	char ini[MAX_PATH], seats[MAX_PATH], tes[4096], name[64], ip[32], *e;
+	struct dev *d = NULL;
+	int slot = 0, k, wait;
+
+	for (wait = 0; wait < 1800 && !((d = main_dev()) && d->frames > 0); wait++) Sleep(100);
+	if (!d) return 0;
+	Sleep(cfg_int("profiles", "fill_delay_ms", 3000));
+	snprintf(ini, sizeof ini, "%sctcl.ini", g_dir);
+	snprintf(seats, sizeof seats, "%sprofiles\\assign.ini", g_dir);
+	if (!GetPrivateProfileSectionA("teslas", tes, sizeof tes, redir(ini))) return 0;
+	for (e = tes, k = 0; *e; e += strlen(e) + 1, k++) {
+		const char *eq = strchr(e, '=');
+		int n;
+		if (!eq) continue;
+		n = (int)(eq - e);
+		while (n && e[n - 1] == ' ') n--;
+		snprintf(ip, sizeof ip, "%.*s", n, e);
+		GetPrivateProfileStringA(ip, "name", "", name, sizeof name, seats);
+		if (!name[0]) continue;
+		if (slot >= 5) {
+			say("profiles: more than five seated pods; %s (%s) is left for the operator", ip, name);
+			continue;
+		}
+		fake_click(178, 92 + 49 * slot);			/* the slot's player list */
+		Sleep(250);
+		fake_click(87, 92 + 49 * slot + 41 + 20 * k);		/* the pod in it */
+		Sleep(250);
+		fake_click(117, 92 + 49 * slot + 25);			/* its name box */
+		fake_chars(name);
+		fake_enter();
+		Sleep(250);
+		fill_list(323, 92 + 49 * slot, (int)GetPrivateProfileIntA(ip, "chassis_pos", 0, seats));
+		fill_list(383, 101 + 49 * slot, (int)GetPrivateProfileIntA(ip, "camo", 0, seats));
+		fill_list(453, 101 + 49 * slot, (int)GetPrivateProfileIntA(ip, "unit", 0, seats));
+		say("profiles: the console's slot %d: pod %s (the list's entry %d), %s", slot + 1, ip, k + 1, name);
+		slot++;
+	}
+	fake_done();
+	return 0;
 }
 
 typedef HWND (WINAPI *GetForegroundWindow_t)(void);
@@ -2368,6 +2526,7 @@ static void redirect_ctcl(void)
 	if (g_launcher) iat_hook("GDI32.dll", "StartDocA", i_StartDocA, (void **)&o_StartDocA);
 	iat_hook("USER32.dll", "GetForegroundWindow", i_GetForegroundWindow, (void **)&o_GetForegroundWindow);
 	iat_hook("USER32.dll", "GetCursorPos", i_GetCursorPos, (void **)&o_GetCursorPos);
+	iat_hook("USER32.dll", "GetKeyState", i_GetKeyState, (void **)&o_GetKeyState);
 	iat_hook("USER32.dll", "SetCursorPos", i_SetCursorPos, (void **)&o_SetCursorPos);
 	iat_hook("USER32.dll", "ClipCursor", i_ClipCursor, (void **)&o_ClipCursor);
 	iat_hook("WS2_32.dll", "WSAConnect", i_WSAConnect, (void **)&o_WSAConnect);
@@ -2939,6 +3098,11 @@ static void ctl_poll(void)
 			else rio_tell("peek %08X %08lX", id, (unsigned long)*(volatile DWORD *)(uintptr_t)id);
 		}
 		else if (!strncmp(buf, "type ", 5)) kb_type(buf + 5);
+		else if (sscanf(buf, "click %d %d", &v[0], &v[1]) == 2) fake_click(v[0], v[1]);
+		else if (!strncmp(buf, "chars ", 6)) fake_chars(buf + 6);
+		else if (!strncmp(buf, "enter", 5)) fake_enter();
+		else if (sscanf(buf, "vkey %x", &id) == 1) fake_vkey(id);
+		else if (!strncmp(buf, "pointer off", 11)) fake_done();
 		else if (!strncmp(buf, "hello", 5)) {
 			int i;
 			rio_tell("rio ready");
@@ -3712,6 +3876,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
 			rio_hooks();
 			keyboard_hooks();
 			CreateThread(NULL, 0, ctl_main, NULL, 0, NULL);
+			if (!strcmp(g_role, "ctcl1") && cfg_int("profiles", "fill_console", 1))
+				CreateThread(NULL, 0, fill_main, NULL, 0, NULL);
 		}
 	}
 	return TRUE;

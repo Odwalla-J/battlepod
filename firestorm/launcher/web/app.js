@@ -398,7 +398,7 @@ async function loadPilots() {
     return;
   }
   $("#pilots-lead").textContent = P.local
-    ? "Everyone who flies here. Seat a pilot in a pod; at LOAD the console gives that pod their name and 'Mech."
+    ? "Everyone who flies here. Seat a pilot in a pod: when the console starts it puts them in a slot, and at LOAD the pod gets their name and 'Mech."
     : `The console's roster (${P.console}). Pick yourself, or make a new pilot, then sit in this pod.`;
   fillChassis();
   renderRoster();
@@ -412,7 +412,17 @@ function renderRoster() {
   $("#roster").innerHTML = list.map(p => {
     const seat = seatOf(p.id);
     const here = seat && !P.local && seat[0] === P.you;
-    const action = P.local ? "" : `<button class="btn ${here ? "ghost" : "primary"}" data-sit="${p.id}">${here ? "Leave" : "Sit here"}</button>`;
+    let action;
+    if (!P.local)
+      action = `<button class="btn ${here ? "ghost" : "primary"}" data-sit="${p.id}">${here ? "Leave" : "Sit here"}</button>`;
+    else if (seat)                                      // the console: seat or unseat them right here
+      action = `<button class="btn ghost" data-seat-pod="${esc(seat[0])}" data-seat-id="">Unseat</button>`;
+    else if ((P.pods || []).length === 1)
+      action = `<button class="btn primary" data-seat-pod="${esc(P.pods[0].ip)}" data-seat-id="${p.id}">Seat in ${esc(P.pods[0].slot)}</button>`;
+    else if ((P.pods || []).length > 1)
+      action = `<select class="seat-in" data-seat-for="${p.id}"><option value="">Seat in...</option>` +
+        P.pods.map(t => `<option value="${esc(t.ip)}">${esc(t.slot)}</option>`).join("") + `</select>`;
+    else action = "";
     return `<div class="pilot${p.id === selected ? " sel" : ""}" data-id="${p.id}">
       <div class="avatar${mechImage(p.chassis) ? "" : " none"}" style="${mechImage(p.chassis) ? `background-image:url('${mechImage(p.chassis)}')` : ""}"></div>
       <div class="who"><div class="nm">${esc(p.name)}</div><div class="mc">${esc(mechLabel(p))}</div></div>
@@ -420,9 +430,22 @@ function renderRoster() {
       ${action}</div>`;
   }).join("") || `<div class="empty">No pilots yet - make the first on the right.</div>`;
   $$(".pilot", $("#roster")).forEach(el => el.addEventListener("click", e => {
-    if (e.target.dataset.sit) return;
+    if (e.target.dataset.sit || e.target.dataset.seatPod || e.target.dataset.seatFor) return;
     selected = el.dataset.id; edit(P.roster.find(p => p.id === selected)); renderRoster();
   }));
+  const seatIn = async (pod, id) => {
+    const r = await api("/api/seat", { pod, id: id || null });
+    status(r.ok ? (r.profile ? `${r.profile.name} seated in ${podName(pod)}: the console fills in their slot when it starts.`
+                             : `${podName(pod)} emptied.`) : "Error: " + r.error, !r.ok);
+    loadPilots();
+  };
+  $$("[data-seat-pod]", $("#roster")).forEach(el => el.addEventListener("click", e => {
+    e.stopPropagation(); seatIn(el.dataset.seatPod, el.dataset.seatId);
+  }));
+  $$("select[data-seat-for]", $("#roster")).forEach(el => {
+    el.addEventListener("click", e => e.stopPropagation());
+    el.addEventListener("change", () => el.value && seatIn(el.value, el.dataset.seatFor));
+  });
   $$("[data-sit]", $("#roster")).forEach(el => el.addEventListener("click", async () => {
     const seat = seatOf(el.dataset.sit);
     const leaving = seat && seat[0] === P.you;
@@ -433,12 +456,18 @@ function renderRoster() {
 }
 function renderSeats() {
   if (!P.local) return;
-  const opts = id => `<option value="">- empty -</option>` +
-    P.roster.slice().sort((a, b) => a.name.localeCompare(b.name)).map(p => `<option value="${p.id}" ${p.id === id ? "selected" : ""}>${esc(p.name)} - ${esc(mechLabel(p))}</option>`).join("");
+  // A seat written by something else (a tool, a hand edit) names a pilot who
+  // is not on the roster: show it as it is, so the pod is not taken for empty.
+  const opts = s => {
+    const id = s && s.profile, known = id && P.roster.some(p => p.id === id);
+    return `<option value="">- empty -</option>` +
+      (s && (s.name || s.mech) && !known ? `<option value="" selected>${esc(s.name || "?")} - ${esc(s.mech || "")} (not on the roster)</option>` : "") +
+      P.roster.slice().sort((a, b) => a.name.localeCompare(b.name)).map(p => `<option value="${p.id}" ${p.id === id ? "selected" : ""}>${esc(p.name)} - ${esc(mechLabel(p))}</option>`).join("");
+  };
   $("#seats").innerHTML = (P.pods || []).map(t => {
     const s = (P.seats || {})[t.ip];
     return `<div class="seat"><div class="dot${s ? "" : " off"}"></div><div class="pod"><b>${esc(t.slot)}</b><div class="hint">${esc(t.ip)}</div></div>
-      <select data-pod="${esc(t.ip)}">${opts(s && s.profile)}</select></div>`;
+      <select data-pod="${esc(t.ip)}">${opts(s)}</select></div>`;
   }).join("") || `<div class="empty">No pods in the console's list (Console page).</div>`;
   $$("select[data-pod]", $("#seats")).forEach(el => el.addEventListener("change", async () => {
     const r = await api("/api/seat", { pod: el.dataset.pod, id: el.value || null });
@@ -460,8 +489,27 @@ function fillVariants(sel) {
   if (sel !== undefined) $("#ed-variant").value = sel;
   portrait();
 }
+// Camo and unit: the console's numbered lists, as pictures where
+// tools/livery.py has read them off the console, else as numbers.
+let edCamo = 1, edUnit = 1;
+function mechs() { return (P && P.mechs) || (S && S.mechs) || {}; }
+function swatches(id, kind, count, cur, set) {
+  const pics = (mechs().livery || {})[kind] || {};
+  $(id).innerHTML = Array.from({ length: count }, (_, i) => i + 1).map(n => pics[n]
+    ? `<button type="button" class="sw${n === cur ? " on" : ""}" data-n="${n}" title="${kind} ${n}" style="background-image:url('/game/${pics[n]}')"><span>${n}</span></button>`
+    : `<button type="button" class="sw num${n === cur ? " on" : ""}" data-n="${n}" title="${kind} ${n}"><span>${n}</span></button>`).join("");
+  $$(".sw", $(id)).forEach(b => b.addEventListener("click", () => { set(+b.dataset.n); }));
+}
+function renderLivery() {
+  const L = mechs().livery || { camos: 16, units: 17 };
+  swatches("#ed-camo", "camo", L.camos, edCamo, n => { edCamo = n; renderLivery(); });
+  swatches("#ed-unit", "unit", L.units, edUnit, n => { edUnit = n; renderLivery(); });
+}
 function edit(p) {
   selected = p ? p.id : null;
+  edCamo = p && p.camo || 1;
+  edUnit = p && p.unit || 1;
+  renderLivery();
   $("#ed-title").textContent = p ? "Edit " + p.name : "New pilot";
   $("#ed-name").value = p ? p.name : "";
   fillChassis(p ? p.chassis : "Loki");
@@ -475,7 +523,8 @@ function wirePilots() {
   $("#ed-variant").addEventListener("change", portrait);
   $("#ed-new").addEventListener("click", () => { edit(null); if (P) renderRoster(); $("#ed-name").focus(); });
   $("#ed-save").addEventListener("click", async () => {
-    const body = { id: selected, name: $("#ed-name").value, chassis: $("#ed-chassis").value, variant: $("#ed-variant").value, notes: $("#ed-notes").value };
+    const body = { id: selected, name: $("#ed-name").value, chassis: $("#ed-chassis").value, variant: $("#ed-variant").value,
+                   notes: $("#ed-notes").value, camo: edCamo, unit: edUnit };
     const r = await api("/api/pilot", body);
     if (!r.ok) return status("Error: " + r.error, true);
     selected = r.profile.id;

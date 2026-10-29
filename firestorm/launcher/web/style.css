@@ -168,6 +168,15 @@ pre#log { background: #000; border: 1px solid #4a4d47; padding: 10px; height: 22
 .pilot .nm { font: 15px var(--head); color: #fff; letter-spacing: .4px; }
 .pilot .mc { color: var(--muted); font-size: 12.5px; font-weight: 700; }
 .seat-tag { font-size: 12px; color: var(--ok); font-weight: 700; }
+.pilot select.seat-in { width: auto; max-width: 140px; }
+.row.top { align-items: flex-start; }
+.swatches { display: flex; flex-wrap: wrap; gap: 4px; max-width: 360px; }
+.sw { width: 34px; height: 34px; padding: 0; border: 2px solid var(--line, #444); border-radius: 4px;
+      background: #000 center / cover no-repeat; position: relative; cursor: pointer; }
+.sw span { position: absolute; right: 1px; bottom: 0; font-size: 10px; font-weight: 700; color: #fff;
+           text-shadow: 0 0 2px #000, 0 0 2px #000; }
+.sw.num span { position: static; font-size: 12px; }
+.sw.on { border-color: var(--accent, #e8a33d); box-shadow: 0 0 0 1px var(--accent, #e8a33d); }
 .seat { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #2c2e2a; }
 .seat:last-child { border-bottom: none; }
 .seat .pod { width: 170px; }
