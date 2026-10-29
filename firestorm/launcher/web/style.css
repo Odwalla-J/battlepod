@@ -1,0 +1,188 @@
+/* The BattleTech Console's look: gunmetal, hazard stripes, black panels
+ * with white rules, steel pills. The fonts are the game's own, loaded from
+ * the game folder at run time (/game/), never copied. */
+@font-face { font-family: "BankGothic"; src: url("/game/hsh/fonts/bnkgothm.ttf"); }
+@font-face { font-family: "BankGothicL"; src: url("/game/hsh/fonts/bnkgothl.ttf"); }
+@font-face { font-family: "DIN"; src: url("/game/hsh/fonts/dinmed.ttf"); }
+@font-face { font-family: "DIN"; font-weight: 700; src: url("/game/hsh/fonts/dinbol.ttf"); }
+
+:root {
+  --bg: #23251f;
+  --steel-hi: #8d9189;
+  --steel: #5a5e57;
+  --steel-lo: #2b2d29;
+  --panel: #000;
+  --rule: #c9cbc6;
+  --line: #4a4d47;
+  --text: #f2f2ee;
+  --muted: #a3a69e;
+  --accent: #ff6a1a;             /* the console title's orange */
+  --accent2: #ffa040;
+  --hazard: #e8b90c;
+  --ok: #3fd04a;
+  --bad: #ff4a3a;
+  --head: "BankGothic", "Segoe UI", sans-serif;
+  --body: "DIN", "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; color: var(--text); font: 14px/1.45 var(--body); }
+body {
+  background:
+    radial-gradient(ellipse at 20% 10%, rgba(255,255,255,.05), transparent 60%),
+    repeating-linear-gradient(115deg, rgba(0,0,0,.18) 0 2px, transparent 2px 7px),
+    linear-gradient(160deg, #353831, #1e201b 60%, #282a24);
+}
+.hazard { height: 16px; background: repeating-linear-gradient(-45deg, var(--hazard) 0 16px, #111 16px 32px);
+  border-bottom: 2px solid #000; box-shadow: 0 2px 0 #6b6d68; }
+.app { display: flex; height: calc(100% - 16px - 62px); }
+
+/* the title plate and the tabs down the side */
+.side { width: 236px; flex: none; padding: 16px 14px; display: flex; flex-direction: column; gap: 6px;
+  background: linear-gradient(90deg, rgba(0,0,0,.35), rgba(0,0,0,.15)); border-right: 2px solid #000;
+  box-shadow: inset -1px 0 0 #6b6d68; }
+.brand { margin-bottom: 14px; padding: 10px 12px; background: #000; border: 2px solid var(--steel-hi);
+  border-radius: 10px; box-shadow: inset 0 0 0 2px #000, inset 0 0 0 3px #3b3d39, 0 3px 6px rgba(0,0,0,.6); text-align: center; }
+.brand .title { font: 21px/1.05 var(--head); color: var(--accent); letter-spacing: .5px;
+  text-shadow: 0 0 6px rgba(255,90,20,.55), 0 1px 0 #000; }
+.brand .sub { font: 11px var(--head); color: var(--muted); letter-spacing: 1.5px; margin-top: 4px; }
+.mark { display: none; }
+.nav { font: 14px var(--head); letter-spacing: .6px; color: #fff; text-decoration: none; padding: 9px 14px; border-radius: 8px 8px 0 0;
+  background: linear-gradient(#111, #000); border: 2px solid #3d403b; border-bottom-color: #000; }
+.nav:hover { border-color: var(--steel-hi); }
+.nav.on { border-color: #fff; background: #000; color: var(--accent2); }
+.side-foot { margin-top: auto; color: var(--muted); font-size: 11px; padding: 8px 4px; word-break: break-all; }
+
+main { flex: 1; overflow-y: auto; padding: 22px 30px 40px; }
+.page { display: none; max-width: 1120px; }
+.page.on { display: block; }
+h1 { margin: 0 0 6px; font: 26px var(--head); color: var(--accent); letter-spacing: .5px; text-shadow: 0 0 8px rgba(255,90,20,.35), 0 2px 0 #000; }
+h3 { margin: 0 0 12px; font: 14px var(--head); letter-spacing: 1px; color: #fff; }
+.lead { color: #d6d8d2; margin: 0 0 20px; max-width: 780px; text-shadow: 0 1px 0 #000; }
+.hint { color: var(--muted); font-size: 12px; }
+.mono { font-family: Consolas, monospace; font-size: 12.5px; }
+
+/* panels: black, ruled in white, as the console's Mission panel */
+.card { background: var(--panel); border: 2px solid var(--rule); border-radius: 4px; padding: 16px 18px; margin-bottom: 16px;
+  box-shadow: 0 0 0 2px #000, 0 4px 10px rgba(0,0,0,.55); }
+.card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.card-head h3 { margin: 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
+
+.row { display: flex; align-items: center; gap: 10px; margin: 9px 0; flex-wrap: wrap; }
+.row > label:first-child { width: 104px; flex: none; color: #fff; font-weight: 700; }
+input, select, button { font: inherit; color: var(--text); }
+input:not([type]), input[type=text], select { background: #000; border: 2px solid #8a8d86; border-radius: 3px;
+  padding: 5px 9px; outline: none; font-weight: 700; color: #fff; }
+select { appearance: none; padding-right: 34px; cursor: pointer;
+  background: #000 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='22'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%23b9bcb5'/%3E%3Cstop offset='1' stop-color='%23626660'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='26' height='22' fill='url(%23g)'/%3E%3Cpath d='M7 8h12l-6 7z' fill='%23111'/%3E%3C/svg%3E") no-repeat right 0 center / auto 100%; }
+select option { background: #000; color: #fff; font-weight: 700; }
+input:focus, select:focus { border-color: var(--accent); }
+input.num { width: 66px; }
+input.wide { width: 280px; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; color: #fff; font-weight: 700; }
+input[type=checkbox] { appearance: none; width: 16px; height: 16px; border: 2px solid #c9cbc6; background: #000; margin: 0; cursor: pointer; position: relative; }
+input[type=checkbox]:checked { background: #000; }
+input[type=checkbox]:checked::after { content: ""; position: absolute; inset: 2px; background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+input[type=range] { accent-color: var(--accent); width: 220px; }
+
+/* steel pills, as the console's Pick Mechs / Default */
+.btn { font: 13px var(--head); letter-spacing: .6px; color: #fff; cursor: pointer; padding: 6px 18px; border-radius: 999px;
+  background: linear-gradient(#6f746c, #3c403a 55%, #2a2d28); border: 2px solid #9ea29a;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 0 0 2px #000; text-shadow: 0 1px 0 #000; }
+.btn:hover { border-color: #fff; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.ghost { background: linear-gradient(#2c2f2a, #151714); }
+/* the hazard button, as the console's LOAD */
+.btn.primary, .big { color: #fff; border: 2px solid #ff3b2a;
+  background: repeating-linear-gradient(-45deg, #b5150d 0 14px, #1a0505 14px 28px);
+  box-shadow: inset 0 0 0 2px #000, 0 0 0 2px #000, 0 0 10px rgba(255,40,20,.35); text-shadow: 0 1px 2px #000, 0 0 6px #000; }
+.btn.primary:hover, .big:hover { border-color: #fff; }
+
+.roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 22px; }
+.role input { display: none; }
+.role-card { background: #000; border: 2px solid #6b6e68; border-radius: 4px; padding: 20px; cursor: pointer; height: 100%;
+  box-shadow: 0 0 0 2px #000, 0 4px 10px rgba(0,0,0,.55); transition: border-color .15s; }
+.role-card:hover { border-color: #fff; }
+.role input:checked + .role-card { border-color: var(--accent); box-shadow: 0 0 0 2px #000, 0 0 14px rgba(255,106,26,.45); }
+.role-icon { font-size: 28px; color: var(--accent); }
+.role-name { font: 20px var(--head); margin: 6px 0 4px; color: #fff; }
+.role-desc { color: var(--muted); }
+
+.pill { display: inline-block; padding: 1px 9px; border-radius: 3px; font-size: 12px; font-weight: 700; background: #000; border: 1px solid #6b6e68; margin: 2px 4px 2px 0; }
+.pill.ok { color: var(--ok); border-color: rgba(63,208,74,.6); }
+.pill.bad { color: var(--bad); border-color: rgba(255,74,58,.6); }
+
+.monmap { background: #000; border: 2px solid var(--rule); border-radius: 4px; padding: 14px; margin-bottom: 16px; box-shadow: 0 0 0 2px #000; }
+#map { width: 100%; height: 340px; display: block; }
+#map .mon { fill: #101210; stroke: #6b6e68; stroke-width: 2; }
+#map .monlabel { fill: #8d9189; font-weight: 700; }
+#map .win { fill: rgba(255, 106, 26, .18); stroke: var(--accent); stroke-width: 1.5; }
+#map .win.auto { stroke-dasharray: 8 6; fill: rgba(255, 106, 26, .07); }
+#map .win.main { fill: rgba(63, 208, 74, .14); stroke: var(--ok); }
+#map .winlabel { fill: #fff; font-weight: 700; }
+
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th { text-align: left; font: 12px var(--head); letter-spacing: .5px; color: #fff; padding: 6px 8px; border-bottom: 2px solid var(--rule); }
+.tbl td { padding: 6px 8px; border-bottom: 1px solid #2c2e2a; vertical-align: middle; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl input:not([type=checkbox]) { width: 100%; min-width: 70px; }
+
+.keys { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.key { background: linear-gradient(#4a4e47, #22241f); border: 1px solid #9ea29a; border-bottom-width: 3px; border-radius: 4px; padding: 2px 9px;
+  font: 700 12px Consolas, monospace; cursor: pointer; color: #fff; }
+.key:hover { border-color: var(--bad); color: var(--bad); }
+.key.add { color: var(--accent); border-style: dashed; background: #000; }
+.key.listening { color: #000; background: var(--accent); border-color: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .55; } }
+
+.launchers { display: flex; gap: 14px; margin-bottom: 18px; }
+.big { font: 20px var(--head); letter-spacing: 1px; padding: 16px 40px; border-radius: 6px; cursor: pointer; }
+.big.ghost { background: linear-gradient(#2c2f2a, #151714); border-color: #9ea29a; box-shadow: 0 0 0 2px #000; }
+.big.ghost:hover { border-color: var(--bad); color: var(--bad); }
+.test .row input { width: 200px; }
+pre#log { background: #000; border: 1px solid #4a4d47; padding: 10px; height: 220px; overflow: auto;
+  font: 11.5px/1.4 Consolas, monospace; color: #9fe39f; white-space: pre-wrap; word-break: break-all; margin: 10px 0 0; }
+.proc { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #2c2e2a; font-weight: 700; }
+.proc:last-child { border-bottom: none; }
+
+/* pilots */
+.pilots { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 1050px) { .pilots { grid-template-columns: 1fr; } }
+.editor { position: sticky; top: 0; }
+.editor .row input, .editor .row select { flex: 1; min-width: 0; }
+.editor .row > label:first-child { width: 70px; }
+.portrait { height: 150px; margin: -4px -6px 12px; border: 2px solid #6b6e68; background: #fff center 30% / cover no-repeat; position: relative; }
+.portrait.none { background: #0b0c0a; display: grid; place-items: center; color: #4a4d47; font: 15px var(--head); }
+.portrait .tag { position: absolute; left: 0; bottom: 0; padding: 3px 10px; background: rgba(0,0,0,.85); color: var(--accent2);
+  font: 13px var(--head); letter-spacing: .5px; border-top-right-radius: 6px; }
+.pilot { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-bottom: 1px solid #2c2e2a; cursor: pointer; }
+.pilot:hover { background: #111310; }
+.pilot.sel { background: #1d140c; box-shadow: inset 3px 0 0 var(--accent); }
+.pilot:last-child { border-bottom: none; }
+.avatar { width: 92px; height: 40px; flex: none; border: 1px solid #6b6e68; background: #fff center 25% / cover no-repeat; }
+.avatar.none { background: #0b0c0a; }
+.pilot .who { flex: 1; min-width: 0; }
+.pilot .nm { font: 15px var(--head); color: #fff; letter-spacing: .4px; }
+.pilot .mc { color: var(--muted); font-size: 12.5px; font-weight: 700; }
+.seat-tag { font-size: 12px; color: var(--ok); font-weight: 700; }
+.seat { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #2c2e2a; }
+.seat:last-child { border-bottom: none; }
+.seat .pod { width: 170px; }
+.seat .pod b { font: 14px var(--head); }
+.seat select { flex: 1; }
+.dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--ok); box-shadow: 0 0 4px var(--ok); flex: none; }
+.dot.off { border-color: #6b6e68; box-shadow: none; }
+.banner { background: #1a0402; border: 2px solid var(--bad); color: #ffc2bb; border-radius: 4px; padding: 12px 16px; margin-bottom: 16px; font-weight: 700; }
+#pilot_filter { width: 180px; }
+.empty { color: var(--muted); padding: 18px 6px; }
+
+/* the footer: a steel bar with the console's buttons */
+.bar { position: fixed; left: 0; right: 0; bottom: 0; height: 62px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 22px 0 256px; background: linear-gradient(#3d403a, #222420); border-top: 2px solid #000; box-shadow: inset 0 1px 0 #6b6d68; }
+#status { color: #e3e5df; font-weight: 700; text-shadow: 0 1px 0 #000; }
+#status.dirty { color: var(--accent2); }
+#status.err { color: var(--bad); }
+.bar-btns { display: flex; gap: 12px; }

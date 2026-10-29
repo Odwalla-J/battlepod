@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firestorm Launcher</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="hazard"></div>
+<div class="app">
+  <nav class="side">
+    <div class="brand">
+      <div class="title">BattleTech<br>Firestorm</div>
+      <div class="sub">Launcher V1.0</div>
+    </div>
+    <a href="#pc" class="nav on" data-page="pc">This PC</a>
+    <a href="#displays" class="nav" data-page="displays">Displays</a>
+    <a href="#controls" class="nav" data-page="controls">Controls</a>
+    <a href="#performance" class="nav" data-page="performance">Performance</a>
+    <a href="#pilots" class="nav" data-page="pilots">Pilots</a>
+    <a href="#console" class="nav" data-page="console">Console</a>
+    <a href="#launch" class="nav" data-page="launch">Launch</a>
+    <div class="side-foot" id="gamepath"></div>
+  </nav>
+
+  <main>
+    <!-- This PC -->
+    <section class="page on" id="page-pc">
+      <h1>This PC</h1>
+      <p class="lead">What this computer is in the centre. A pod is a cockpit: it waits for the console to send it a match. The console is the operator's station: it sets up matches for every pod and prints the reports.</p>
+      <div class="roles">
+        <label class="role"><input type="radio" name="role" value="pod">
+          <div class="role-card"><div class="role-icon">&#9672;</div><div class="role-name">Pod</div>
+          <div class="role-desc">A cockpit. Main view, MFDs, radar and plasma sign; the controls.</div></div></label>
+        <label class="role"><input type="radio" name="role" value="console">
+          <div class="role-card"><div class="role-icon">&#9636;</div><div class="role-name">Console</div>
+          <div class="role-desc">The operator's station: the pod list, match setup, battle reports.</div></div></label>
+        <label class="role"><input type="radio" name="role" value="both">
+          <div class="role-card"><div class="role-icon">&#9673;</div><div class="role-name">Both</div>
+          <div class="role-desc">One pod and the console on this PC, for testing and home play.</div></div></label>
+      </div>
+      <div class="card only-pod">
+        <h3>The console</h3>
+        <div class="row"><label>Address</label><input id="console_addr" class="wide" placeholder="e.g. 200.0.0.20">
+          <span class="hint">The console PC, for its pilot roster. Its launcher must be open.</span></div>
+      </div>
+      <div class="cards">
+        <div class="card"><h3>Game folder</h3><div id="pc-game" class="mono"></div><div id="pc-shim"></div></div>
+        <div class="card"><h3>Network</h3><div id="pc-net"></div></div>
+        <div class="card"><h3>Monitors</h3><div id="pc-mons"></div></div>
+        <div class="card"><h3>Gamepads</h3><div id="pc-pads"></div></div>
+      </div>
+    </section>
+
+    <!-- Displays -->
+    <section class="page" id="page-displays">
+      <h1>Displays</h1>
+      <p class="lead">Where each of the pod's screens goes. The map is to scale; drag nothing, it follows the fields.</p>
+      <div class="monmap"><svg id="map"></svg></div>
+
+      <div class="grid2">
+        <div class="card">
+          <h3>Main view</h3>
+          <div class="row"><label>Resolution</label>
+            <select id="mode"></select>
+            <span class="hint">The game's own sizes, all 4:3. 1600x1200 needs 16-bit.</span></div>
+          <div class="row"><label>Colour</label>
+            <select id="bitdepth"><option value="16">16-bit (recommended)</option><option value="32">32-bit</option></select>
+            <span class="hint">At 32-bit and 1600x1200 the MFDs go black.</span></div>
+          <div class="row"><label>Show</label>
+            <select id="main_fullscreen"><option value="1">Full screen on a monitor</option><option value="0">In a window</option></select></div>
+          <div class="row only-full"><label>Monitor</label><select id="main_monitor"></select></div>
+          <div class="row only-win"><label>Window</label>
+            <input id="main_x" class="num" placeholder="x"><input id="main_y" class="num" placeholder="y">
+            <input id="main_w" class="num" placeholder="width"><input id="main_h" class="num" placeholder="height"></div>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="keep_aspect"> Keep the 4:3 shape (black bars on a wide screen)</label></div>
+        </div>
+
+        <div class="card">
+          <h3>Cockpit screens</h3>
+          <div class="row"><label>MFDs</label>
+            <select id="mfd_layout"><option value="windows">Five windows</option><option value="wall">One wall (video-wall controller)</option></select>
+            <span class="only-wall"><input id="wall_cols" class="num" placeholder="across"></span></div>
+          <div class="row"><label>MFD colour</label>
+            <select id="mfd_tint"><option value="FFFFFF">White</option><option value="40FF60">Green phosphor</option><option value="FFB040">Amber</option></select></div>
+          <div class="row"><label>Radar</label>
+            <select id="radar_rotate"><option value="0">As drawn (landscape)</option><option value="90">Upright, turned right (portrait monitor)</option><option value="270">Upright, turned left</option></select></div>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="plasma"> Plasma sign (the pilot's name over the pod)</label></div>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="show_surface"> Debug window with the whole MFD surface</label></div>
+          <div class="row"><label>Arrange</label>
+            <select id="arrange_mon"></select>
+            <label class="check"><input type="checkbox" id="arrange_borderless" checked> No borders</label>
+            <button class="btn" id="arrange">Arrange on this monitor</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Cockpit windows</h3>
+        <table class="tbl" id="wintable">
+          <thead><tr><th>Window</th><th>x</th><th>y</th><th>Width</th><th>Height</th><th>No border</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint">Positions are desktop coordinates; blank means the shim's default. Sizes are the picture inside the window.</p>
+      </div>
+    </section>
+
+    <!-- Controls -->
+    <section class="page" id="page-controls">
+      <h1>Controls</h1>
+      <p class="lead">The pod's stick, throttle, pedals and buttons, from the keyboard and a gamepad. The MFD soft keys are F1-F8 (the selected MFD) and the radar's Ctrl/Shift+F1-F6, or a click on their labels.</p>
+      <div class="grid2">
+        <div class="card">
+          <h3>Gamepad</h3>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="pad_enabled"> Use an Xbox-style (XInput) pad</label></div>
+          <div class="row"><label>Pad</label><select id="pad_index"><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option></select><span class="hint" id="pad_seen"></span></div>
+          <div class="row"><label>Dead zone</label><input type="range" id="pad_deadzone" min="0" max="16000" step="250"><span class="hint" id="pad_deadzone_v"></span></div>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="pad_invert_y"> Invert aim (push forward to aim down)</label></div>
+          <p class="hint">Left stick: turn and throttle. Right stick: torso twist and aim.</p>
+        </div>
+        <div class="card">
+          <h3>Keyboard</h3>
+          <div class="row"><label>Aim ramp</label><input type="range" id="ramp_ms" min="0" max="1500" step="50"><span class="hint" id="ramp_ms_v"></span></div>
+          <p class="hint">A tap of an aim key nudges; holding pushes harder, reaching full after this long.</p>
+          <div class="row"><label>Mouse</label>
+            <select id="capture_mouse"><option value="">Free in a pod (click the MFD labels)</option><option value="1">Captured by the game</option><option value="0">Always free</option></select></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Bindings</h3><button class="btn ghost" id="binds_reset">Reset all to defaults</button></div>
+        <table class="tbl" id="bindtable">
+          <thead><tr><th>Action</th><th>Keys</th><th>Gamepad</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint">Click <b>+</b> and press a key to add it (up to four); click a key to remove it.</p>
+      </div>
+    </section>
+
+    <!-- Performance -->
+    <section class="page" id="page-performance">
+      <h1>Performance</h1>
+      <p class="lead">How frames reach the screen.</p>
+      <div class="card">
+        <div class="row"><label>Frame pacing</label>
+          <select id="vsync"><option value="1">Every refresh of the monitor (smoothest)</option><option value="2">Every other refresh (half rate, steady)</option><option value="0">By the clock, at a frame limit</option></select></div>
+        <div class="row"><label>Frame limit</label><input id="max_fps" class="num" placeholder="auto"><span class="hint">With pacing by refresh, only a ceiling; blank for the default.</span></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="gpu_present"> Let the graphics card put the main view on screen (faster)</label></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="frame_stats"> Log frame rate and timing every 10 s</label></div>
+      </div>
+    </section>
+
+    <!-- Pilots -->
+    <section class="page" id="page-pilots">
+      <h1>Pilots</h1>
+      <p class="lead" id="pilots-lead"></p>
+      <div class="banner" id="pilots-error" hidden></div>
+      <div class="pilots">
+        <div>
+          <div class="card">
+            <div class="card-head"><h3>Roster</h3><input id="pilot_filter" placeholder="Find a pilot"></div>
+            <div id="roster"></div>
+          </div>
+          <div class="card only-console" id="seating">
+            <h3>Pods</h3>
+            <div id="seats"></div>
+            <p class="hint">Seat a pilot in a pod: at the next LOAD the console's slot for that pod takes the pilot's name and 'Mech, whatever the operator chose for it. The operator still puts the pod in a slot.</p>
+          </div>
+        </div>
+        <div class="card editor">
+          <h3 id="ed-title">New pilot</h3>
+          <div class="portrait" id="ed-portrait"><div class="tag" id="ed-tag"></div></div>
+          <div class="row"><label>Name</label><input id="ed-name" maxlength="15" placeholder="Callsign"></div>
+          <div class="row"><label>'Mech</label><select id="ed-chassis"></select></div>
+          <div class="row"><label>Variant</label><select id="ed-variant"></select></div>
+          <div class="row"><label>Notes</label><input id="ed-notes" class="wide" maxlength="200"></div>
+          <div class="row"><label></label>
+            <button class="btn primary" id="ed-save">Save pilot</button>
+            <button class="btn ghost" id="ed-new">New</button>
+            <button class="btn ghost only-console" id="ed-delete">Remove</button></div>
+          <p class="hint" id="ed-hint">Names up to 15 characters - what the console's name box and the plasma sign take.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Console -->
+    <section class="page" id="page-console">
+      <h1>Console</h1>
+      <p class="lead">For the console PC: the pods it runs, by network address, and the battle reports. Pods are listed in <span class="mono">ctcl.ini</span>; each gets a slot on the console's screen.</p>
+      <div class="card">
+        <div class="card-head"><h3>Pods</h3><div><button class="btn ghost" id="tesla_fill">Fill 16 pods...</button> <button class="btn" id="tesla_add">Add a pod</button></div></div>
+        <table class="tbl" id="teslatable">
+          <thead><tr><th>On</th><th>Address</th><th>Slot name</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint">On one PC, the pod's address is this PC's own. A pod PC needs its <span class="mono">mw4files</span> folder shared as <span class="mono">mw4files</span> for its battle reports to reach the console.</p>
+      </div>
+      <div class="card">
+        <h3>Battle reports</h3>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="start_printer"> Start the report printer (mw4print) with the console</label></div>
+        <div class="row"><label>Printing</label>
+          <select id="print_to_file"><option value="">Automatic: a PDF file when the default printer saves to file</option><option value="1">Always save to a file</option><option value="0">Always the printer</option></select></div>
+        <div class="row"><label>Folder</label><input id="print_folder" class="wide"><span class="hint">Relative to the game folder.</span></div>
+      </div>
+    </section>
+
+    <!-- Launch -->
+    <section class="page" id="page-launch">
+      <h1>Launch</h1>
+      <p class="lead" id="launch-lead"></p>
+      <div class="launchers">
+        <button class="big" id="go">Start</button>
+        <button class="big ghost" id="stop">Stop everything</button>
+      </div>
+      <div class="card test">
+        <h3>Test match on this PC</h3>
+        <p class="hint">Starts the pod, the console and the report printer here, fills in the console, and launches a match against one bot.</p>
+        <div class="row"><label>Pilot</label><input id="test_pilot" value="Pilot"><button class="btn" id="test">Start a test match</button></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h3>Running</h3><div id="procs"></div></div>
+        <div class="card"><h3>Log</h3><select id="logrole"><option value="ctcl2">Pod</option><option value="ctcl1">Console</option><option value="launcher">Pod launcher</option><option value="mw4print">Report printer</option></select><pre id="log"></pre></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer class="bar">
+  <div id="status">Loading...</div>
+  <div class="bar-btns"><button class="btn ghost" id="revert">Revert</button><button class="btn primary" id="save">Save</button></div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
