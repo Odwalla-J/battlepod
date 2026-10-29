@@ -186,3 +186,16 @@ pre#log { background: #000; border: 1px solid #4a4d47; padding: 10px; height: 22
 #status.dirty { color: var(--accent2); }
 #status.err { color: var(--bad); }
 .bar-btns { display: flex; gap: 12px; }
+
+/* a 'Mech's loadout, under its portrait */
+.spec { margin: -4px 0 10px; padding: 10px 12px; border: 1px solid #3d403b; background: #070807; }
+.spec-head { font: 15px var(--head); color: #fff; margin-bottom: 8px; }
+.spec-head b { color: var(--accent2); }
+.bar-row { display: grid; grid-template-columns: 74px 1fr 32px; gap: 8px; align-items: center; font-size: 12px; font-weight: 700; margin: 3px 0; }
+.bar-row b { text-align: right; color: #fff; }
+.meter { height: 8px; background: #1b1d1a; border: 1px solid #3d403b; }
+.meter i { display: block; height: 100%; background: linear-gradient(90deg, #b5150d, var(--accent), #ffd04a); }
+.weapons { margin: 10px 0 6px; font-weight: 700; color: #fff; font-size: 13px; }
+.weapons > div { padding: 2px 0; border-bottom: 1px solid #1b1d1a; }
+.weapons .n { color: var(--accent2); display: inline-block; width: 26px; }
+.spec-foot { margin-top: 6px; }

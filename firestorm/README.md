@@ -62,6 +62,21 @@ each pilot's 'Mech with the battle report's portraits; all of these are read
 from the game folder (`hsh\fonts`, `hsh\Mechs`) as the window draws, never
 copied into this repository.
 
+### 'Mech loadouts
+
+The variant files (`resource\Variants\*.mw4`) are packed in the engine's own
+bit-level format, so the game is used to read them: `tools/mechcat.py --game
+C:\path\to\MW4` seats each of the 357 'Mechs and variants in the pod in turn
+(through the profiles mechanism below), LOADs it and reads the statistics off
+the radar's 'Mech view, LAUNCHes and reads the weapon table off MFD 5, with
+Windows' own text recognition. About 40 s a 'Mech, four hours in all; it
+saves after each and resumes where it stopped, and it drives the console's
+window, so the PC is the tool's while it runs. The catalogue,
+`profiles\mechs.json`, and the crops it was read from (`profiles\mechcat\`)
+stay in the game folder; `--report` writes `profiles\MECHS.md`, a table of
+every variant. The launcher's Pilots page shows a 'Mech's tonnage, class,
+ratings and weapons from it under the portrait.
+
 ### Profiles
 
 The roster lives on the console PC, in `profiles\profiles.json` beside the

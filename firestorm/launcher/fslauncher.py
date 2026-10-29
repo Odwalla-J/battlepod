@@ -585,7 +585,17 @@ class Pilots:
             if v:
                 groups[c].append({"file": v, "label": v[len(c):].strip()})
         return {"chassis": [c for c in sorted(CHASSIS, key=str.lower)], "variants": groups,
-                "images": mech_images(self.game)}
+                "images": mech_images(self.game), "specs": self.specs()}
+
+    def specs(self):
+        """What tools/mechcat.py read off the game's own screens, by 'Mech
+        name ("Loki", "Loki B"): statistics and weapons. Empty until it runs."""
+        try:
+            with open(self._path("mechs.json"), encoding="utf-8") as f:
+                cat = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return {k: {"stats": v.get("stats", {}), "weapons": v.get("weapons", [])} for k, v in cat.items()}
 
     def index_of(self, chassis, variant):
         t = mech_table(self.game)

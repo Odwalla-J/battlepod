@@ -327,6 +327,53 @@ function portrait() {
   el.classList.toggle("none", !img);
   el.style.backgroundImage = img ? `url("${img}")` : "";
   $("#ed-tag").textContent = c + (v.value ? " " + v.options[v.selectedIndex].text : "");
+  renderSpec(v.value || c);
+}
+
+// ---- what a 'Mech carries, as the game showed it (tools/mechcat.py)
+function weaponLabel(n) {
+  // OCR's I and O for 1 and 0 after a weapon type; "REAR" for a weapon facing back
+  let s = n.replace(/(AC|LRM|SRM|MRM|ATM|SSRM|LBX|LB)([0-9IOLS]+)(?=REAR|$)/,
+    (m, t, d) => t + d.replace(/[IL]/g, "1").replace(/O/g, "0").replace(/S/g, "5"));
+  const rear = s.endsWith("REAR");
+  if (rear) s = s.slice(0, -4);
+  let clan = false;
+  if (s.startsWith("CLAN")) { clan = true; s = s.slice(4); }
+  const named = { MACHINEGUN: "Machine Gun", GAUSSRIFLE: "Gauss Rifle", LIGHTGAUSSRIFLE: "Light Gauss Rifle", FLAMER: "Flamer",
+    PPC: "PPC", ERPPC: "ER PPC", NARC: "NARC Beacon", NARCBEACON: "NARC Beacon", TAG: "TAG", AMS: "Anti-Missile System", LONGTOM: "Long Tom",
+    HEAVYGAUSSRIFLE: "Heavy Gauss Rifle", THUNDERBOLT: "Thunderbolt" };
+  if (named[s]) s = named[s];
+  else {
+    s = s.replace(/^ULTRAAC(\d+)$/, "Ultra AC/$1").replace(/^LBXAC(\d+)$/, "LB $1-X AC").replace(/^RAC(\d+)$/, "Rotary AC/$1")
+      .replace(/^AC(\d+)$/, "AC/$1").replace(/^SSRM(\d+)$/, "Streak SRM $1").replace(/^STREAKSRM(\d+)$/, "Streak SRM $1")
+      .replace(/^(LRM|SRM|MRM|ATM)(\d+)$/, "$1 $2").replace(/^ER/, "ER ").replace(/^HEAVY/, "Heavy ")
+      .replace(/(LARGE|MEDIUM|SMALL)?(PULSE)?(LASER)$/, (m, size, pulse, l) =>
+        [size && size[0] + size.slice(1).toLowerCase(), pulse && "Pulse", "Laser"].filter(Boolean).join(" "));
+  }
+  return (clan ? "Clan " : "") + s + (rear ? " (rear)" : "");
+}
+function renderSpec(key) {
+  const m = (P && P.mechs) || (S && S.mechs) || {};
+  const sp = (m.specs || {})[key], el = $("#ed-spec");
+  if (!sp) {
+    el.innerHTML = `<div class="hint">No loadout read for this 'Mech yet (tools/mechcat.py).</div>`;
+    return;
+  }
+  const st = sp.stats || {};
+  const bar = (label, v) => v == null ? "" :
+    `<div class="bar-row"><span>${label}</span><div class="meter"><i style="width:${Math.max(0, Math.min(100, v))}%"></i></div><b>${v}</b></div>`;
+  const groups = [];
+  for (const w of sp.weapons || []) {
+    const g = groups.find(g => g.name === w.name);
+    if (g) { g.n++; g.ammo = g.ammo != null || w.ammo != null ? (g.ammo || 0) + (w.ammo || 0) : null; }
+    else groups.push({ name: w.name, n: 1, ammo: w.ammo });
+  }
+  el.innerHTML = `
+    <div class="spec-head"><b>${st.tonnage != null ? st.tonnage + " t" : ""}</b> ${esc(st.class || "")} <span class="hint">${esc(st.tech || "")}</span></div>
+    ${bar("Firepower", st.firepower)}${bar("Armor", st.armor)}${bar("Speed", st.speed)}${bar("Heat eff.", st.heat_efficiency)}
+    <div class="weapons">${groups.map(g => `<div><span class="n">${g.n}x</span> ${esc(weaponLabel(g.name))}${g.ammo != null ? ` <span class="hint">${g.ammo} rounds</span>` : ""}</div>`).join("")
+      || `<div class="hint">No weapons read.</div>`}</div>
+    <div class="hint spec-foot">Accel ${st.accel ?? "?"} / decel ${st.decel ?? "?"} m/s, turn ${st.turn_rate ?? "?"}&deg;/s, torso ${st.torso_range ?? "?"}&deg; at ${st.twist_speed ?? "?"}&deg;/s</div>`;
 }
 function mechLabel(p) {
   if (!p.variant) return p.chassis + " (stock)";
