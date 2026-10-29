@@ -234,7 +234,9 @@ VWE_GAME_FILES="$GF" tools/play.sh
 
 The lamps, displays, bar graphs and main view open as four windows. Your Mech
 drops in, and after a few seconds the main view shows BadLands with a Loki
-150 metres ahead. W/S throttle, A/D stick, space fires, T targets, Esc quits.
+150 metres ahead. W/S throttle, A/D stick, space fires, T targets, Esc quits;
+or a gamepad - left stick throttle and steering, right trigger fires, A
+targets. The panel windows light up as the game plays.
 
 ## Usage
 
@@ -353,6 +355,27 @@ starts a game the way the operator console does - range, vehicles, map,
 own frames, its clock paced to the wall. W/S throttle, A/D stick, space fires,
 T selects a target, L the searchlight, Esc quits. Your Mech drops in first and
 ignores the controls until it lands. A Loki stands 150 metres ahead.
+
+**Fly it with a gamepad.** Any controller SDL knows: the left stick's Y
+moves the throttle lever (push to open, pull to close), either stick's X
+steers, the right trigger fires, A selects a target, Y the searchlight, and
+the D-pad opens and closes the throttle all the way.
+
+**Hand the panel to other hardware.** `PLAY_ARGS="--rio-port 127.0.0.1:5180"`
+streams the Remote I/O link - every lamp, display and bar graph the game
+drives - over UDP, and takes button and analog reports back
+([docs/api.md](docs/api.md), *The cockpit's port*). `tools/riobridge.py`
+prints the stream and sends what you type: `tap 04` selects the map display.
+
+**A cockpit MFD, in software.** `Cockpit.cmd` (or `tools/cockpit.sh`)
+starts `tools/bridge.py` and `tools/vmfd.py` beside the game, joined by
+`--rio-port`: an eight-key MFD window whose keys light as the game lights them and whose
+screen carries the message line, engine status and a weapon. It is the
+first hardware milestone with the hardware simulated - the same protocol a
+real RP2040 module will speak ([docs/MODULE_PROTOCOL.md](docs/MODULE_PROTOCOL.md)).
+The same bridge flies Firestorm under firestorm-shim:
+`python tools/bridge.py --game firestorm`, and `vmfd.py --uid vmfd-1` to
+`vmfd-5` for its five MFDs.
 
 **Record it, without a window.** `--record` draws the pod's frames as
 `--frame-out` does and pipes them to `ffmpeg`, timed by the pod's own clock,

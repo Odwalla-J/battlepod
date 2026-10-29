@@ -70,9 +70,16 @@ static void index_frames(const uint8_t *buf, uint32_t n)
 	uint32_t at = 0;
 
 	g_frames = 0;
-	while (at + 4 <= n && g_frames < MAXFRAMES) {
-		uint32_t len;
+	while (at < n && g_frames < MAXFRAMES) {
+		uint32_t len, raw = rio_raw_len(buf[at]);
+		if (raw) {				/* a game's unframed message */
+			if (at + raw > n) break;
+			g_start[g_frames++] = at;
+			at += raw;
+			continue;
+		}
 		if (buf[at] != 0x01) { at++; continue; }
+		if (at + 4 > n) break;
 		len = buf[at + 2];
 		if (at + 5 + len > n) break;
 		g_start[g_frames++] = at;
@@ -215,6 +222,43 @@ static int selftest(void)
 	if (lamp_id(0x3C) || lamp_id(0x61) || !lamp_id(0x60) || !lamp_id(0x53)) return 1;
 	if (bar_id(0x8C) || bar_id(0x8F) || !bar_id(0x8B)) return 1;
 	if (glyph_of('B') != 12 || glyph_of('7') != 8 || glyph_of('~') != 41) return 1;
+
+	/* A game's stream is raw: the same payloads with no frame round them,
+	 * split by each opcode's length. Our own bytes, not a capture. */
+	{
+		static const uint8_t raw[] = {
+			0xD5,						/* boot */
+			0xD1, 0x8C, 'M','A','P',' ','D','I','S','P',	/* message line */
+			0xD3, 0x04, 0x03,				/* lamp 04 bright */
+			0xD3, 0x00, 0x02,				/* lamp 00 dim */
+			0xD4, 0x8F, '4','2',				/* field 8F "42" */
+			0xD2, 0x81, 0x07,				/* bar 81 = 7 */
+			0xD7, 0xD8, 0xD9, 0xDA,				/* re-zero */
+			0xD3, 0x10,					/* cut short */
+		};
+		uint32_t used;
+		rio_reset(&p);
+		used = rio_walk(&p, raw, sizeof raw);
+		if (p.raw != 10 || p.frames != 0 || p.bad != 0) { printf("raw %u frames %u bad %u\n", p.raw, p.frames, p.bad); return 1; }
+		if (used != sizeof raw - 2) { printf("raw used %u\n", used); return 1; }	/* the tail kept */
+		if (!p.text_set[0x8C] || memcmp(p.text[0x8C], "MAP DISP", 8)) return 1;
+		if (p.lamp[4] != 3 || p.lamp[0] != 2 || p.lamp_set[0x10]) return 1;
+		if (!p.field_set[0x8F] || memcmp(p.field[0x8F], "42", 2) || p.text_set[0x8F]) return 1;
+		if (p.bar[0x81] != 7 || p.ctl[0] != 1 || p.ctl[2] != 1 || p.ctl[5] != 1) return 1;
+
+		/* Framed at boot, raw in a game: one stream, both walked. */
+		{
+			uint8_t mix[sizeof cap + sizeof raw];
+			memcpy(mix, cap, sizeof cap);
+			memcpy(mix + sizeof cap, raw, sizeof raw - 2);
+			rio_reset(&p);
+			rio_walk(&p, mix, sizeof cap + sizeof raw - 2);
+			if (p.frames != 4 || p.raw != 10 || p.bad != 0) return 1;
+			if (memcmp(p.text[0x80], "BATTLTEC", 8) || p.lamp[4] != 3) return 1;
+			index_frames(mix, sizeof cap + sizeof raw - 2);
+			if (g_frames != 14) { printf("indexed %d\n", g_frames); return 1; }
+		}
+	}
 
 	printf("selftest: ok\n");
 	return 0;

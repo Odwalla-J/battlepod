@@ -146,6 +146,13 @@ static void draw_text(SDL_Renderer *r, const struct rio_panel *p)
 		if (p->text_set[i]) SDL_SetRenderDrawColor(r, 70, 255, 120, 255);
 		else SDL_SetRenderDrawColor(r, 40, 60, 45, 255);
 		text(r, 44, y, 3, p->text_set[i] ? p->text[i] : "        ", 8);
+
+		/* D4's two-character field - the readout on 8F, a count on a
+		 * weapon's display - in amber beside it. */
+		if (p->field_set[i]) {
+			SDL_SetRenderDrawColor(r, 255, 190, 60, 255);
+			text(r, 320, y, 3, p->field[i], 2);
+		}
 	}
 }
 

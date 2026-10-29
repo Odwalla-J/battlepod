@@ -1,0 +1,87 @@
+# BattleTech 13.1.8 on the Tesla 3.0 pod: the game's Remote I/O ids, by name.
+# docs/HARDWARE_MAPPING.md, "The cockpit state and command interface";
+# what each id is, and how sure that is: docs/COCKPIT_INTERFACE.md.
+#
+#   lamp ID NAME            D3 ID level        the lamp in a key (0-3)
+#   button ID NAME          B1/B0 ID           a key's press and release
+#   text ID[,ID...] NAME    D1 ID 8 chars      several ids make one longer text
+#   field ID NAME           D4 ID 2 chars
+#   bar ID NAME             D2 ID count
+#   axis ID NAME LO HI      C0 ID value
+# A key and its lamp share an id, and so a name.
+
+# function keys - the first milestone's MFD
+lamp 00 func.radar
+button 00 func.radar
+lamp 04 func.map
+button 04 func.map
+lamp 08 func.damage
+button 08 func.damage
+lamp 40 func.target
+button 40 func.target
+lamp 3C func.radar2km
+button 3C func.radar2km
+lamp 3D func.zoomin
+button 3D func.zoomin
+lamp 43 func.zoomout
+button 43 func.zoomout
+lamp 10 func.indirect
+button 10 func.indirect
+
+# advanced functions
+lamp 20 func.searchlight
+button 20 func.searchlight
+lamp 28 func.centre
+button 28 func.centre
+lamp 1C torso.right
+button 1C torso.right
+lamp 51 torso.left
+button 51 torso.left
+
+# pilot interface modes
+lamp 32 mode.basic
+button 32 mode.basic
+lamp 33 mode.advanced
+button 33 mode.advanced
+lamp 30 mode.crosshairs
+button 30 mode.crosshairs
+lamp 31 mode.stickturns
+button 31 mode.stickturns
+
+# text
+text 8C,8D,8E message
+text 90 engine
+field 8F readout
+text 80 weapon.0.name
+text 81 weapon.1.name
+text 82 weapon.2.name
+text 83 weapon.3.name
+text 84 weapon.4.name
+text 85 weapon.5.name
+text 86 weapon.6.name
+text 87 weapon.7.name
+text 88 weapon.8.name
+text 89 weapon.9.name
+text 8A weapon.10.name
+text 8B weapon.11.name
+field 80 weapon.0.count
+field 81 weapon.1.count
+field 82 weapon.2.count
+field 83 weapon.3.count
+field 84 weapon.4.count
+field 85 weapon.5.count
+bar 80 weapon.0.bar
+bar 81 weapon.1.bar
+bar 82 weapon.2.bar
+bar 83 weapon.3.bar
+bar 84 weapon.4.bar
+bar 85 weapon.5.bar
+
+# controls
+button A5 trigger.1
+button A6 trigger.2
+button A7 trigger.3
+axis A0 throttle 0 0x340
+axis A1 stick.left 0 0x80
+axis A2 stick.right 0 0x80
+axis A4 pedals.turn 0 0x340

@@ -8,6 +8,13 @@
  * with three payload opcodes - D1 display, D2 bar graph, D3 lamp - recovered
  * from the firmware's own diagnostic menu. See DEVICES.md.
  *
+ * In a game the firmware switches the link to raw mode: the same payloads,
+ * back to back, with no frame round them, plus D4 (a two-character field)
+ * and D5-DA (one byte each, no operand). A raw stream has no delimiters, so
+ * it is split by each opcode's length. No raw opcode is 01, so one walker
+ * reads both, and a stream that changes mode mid-way. See
+ * docs/COCKPIT_INTERFACE.md, "Every output opcode".
+ *
  * This is deliberately the seam between the emulator and anything that draws a
  * panel: both ends speak the byte stream the real hardware spoke, so a panel
  * can be drawn in this process, driven from a captured file with no emulator
@@ -31,7 +38,11 @@ struct rio_panel {
 	int     bar_set[RIO_DEV_HI];
 	char    text[RIO_DEV_HI][9];
 	int     text_set[RIO_DEV_HI];
+	char    field[RIO_DEV_HI][3];	/* D4: a two-character field */
+	int     field_set[RIO_DEV_HI];
+	uint32_t ctl[6];		/* D5-DA seen, each: no panel state */
 	uint32_t frames;		/* well-formed frames applied */
+	uint32_t raw;			/* raw-mode messages applied */
 	uint32_t bad;			/* framing or checksum failures seen */
 };
 
@@ -67,22 +78,53 @@ static void rio_apply(struct rio_panel *s, const uint8_t *p, uint32_t n)
 			s->lamp_set[p[1]] = 1;
 		}
 		break;
+	case 0xD4:				/* field: id, 2 characters */
+		if (n >= 4 && p[1] >= RIO_DEV_LO && p[1] < RIO_DEV_HI) {
+			s->field[p[1]][0] = (char)p[2];
+			s->field[p[1]][1] = (char)p[3];
+			s->field_set[p[1]] = 1;
+		}
+		break;
+	case 0xD5: case 0xD6: case 0xD7: case 0xD8: case 0xD9: case 0xDA:
+		s->ctl[p[0] - 0xD5]++;		/* D5 at boot; D6-DA re-zero the analogs? */
+		break;
 	default:
-		break;			/* D5 and anything else: no panel state */
+		break;
 	}
 }
 
-/* Walk a byte stream, applying every frame in it. Returns how far it got, so a
- * caller feeding bytes as they arrive can keep the tail and try again. */
+/* A raw message's length, opcode included; 0 if the byte opens none. */
+static uint32_t rio_raw_len(uint8_t op)
+{
+	switch (op) {
+	case 0xD1: return 10;
+	case 0xD2: case 0xD3: return 3;
+	case 0xD4: return 4;
+	case 0xD5: case 0xD6: case 0xD7: case 0xD8: case 0xD9: case 0xDA: return 1;
+	}
+	return 0;
+}
+
+/* Walk a byte stream, applying every frame and raw message in it. Returns how
+ * far it got, so a caller feeding bytes as they arrive can keep the tail and
+ * try again. */
 static uint32_t rio_walk(struct rio_panel *s, const uint8_t *buf, uint32_t n)
 {
 	uint32_t at = 0;
 
-	while (at + 4 <= n) {
-		uint32_t len, j;
+	while (at < n) {
+		uint32_t len, j, raw = rio_raw_len(buf[at]);
 		uint8_t sum = 0;
 
+		if (raw) {
+			if (at + raw > n) break;		/* incomplete: keep the tail */
+			rio_apply(s, &buf[at], raw);
+			s->raw++;
+			at += raw;
+			continue;
+		}
 		if (buf[at] != 0x01) { at++; s->bad++; continue; }
+		if (at + 4 > n) break;
 		len = buf[at + 2];
 		if (at + 5 + len > n) break;		/* incomplete: keep the tail */
 		if ((uint8_t)(buf[at + 1] + buf[at + 2]) != buf[at + 3]) s->bad++;

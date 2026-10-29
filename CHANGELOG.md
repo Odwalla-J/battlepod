@@ -8,6 +8,47 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The panel talks in a game.** The DUART's channel A transmitter now takes
+  a byte time (`--rio-baud`, default 9600; 0 for the old instant one).
+  Instant, it let `rio_send` drain its own queue between enabling the
+  transmitter and marking the link busy, and the link stayed "busy" for ever
+  after the first frame. Now a game streams its weapon displays, lamps,
+  message line and engine status as it plays. COCKPIT_INTERFACE.md,
+  *Defects*, 1.
+- **A game's unframed stream, read.** `rio_walk` reads raw-mode messages -
+  `D1`-`D4` by length, `D5`-`DA` counted - as well as frames, and a stream
+  that switches between them; `D4`'s two-character fields are kept and drawn
+  in amber in the displays window. `paneltest --selftest` has raw and mixed
+  cases.
+- **The whole stream.** Channel A goes through a 64 KB ring that each
+  consumer reads with its own cursor; `--rio-dump` writes every byte, not the
+  first 8 KB, and the end-of-run report covers the whole run.
+- **`--rio-port HOST:PORT`**: the Remote I/O link on UDP for a cockpit
+  bridge - `r` datagrams out as transmitted, `R` in. docs/api.md, *The
+  cockpit's port*; `tools/riobridge.py` is the smallest bridge. Pressing
+  `04` through it selects the map display: `MAP DISPLAY SELECTED`, lamp `04`
+  bright, `00` dim - the first milestone, in software.
+- **The cockpit bridge and a virtual MFD** - Phase 1, in software.
+  `tools/bridge.py` sits between `--rio-port` and cockpit modules: the game's
+  ids named by `profiles/battletech-13.1.8`, put on modules by a layout
+  (`layouts/milestone-mfd`), the whole state replayed to a module that
+  reconnects, and every id nothing is bound to logged. Modules speak
+  [MODULE_PROTOCOL.md](docs/MODULE_PROTOCOL.md) - COBS, CRC-16, the same
+  bytes on USB serial and TCP; `tools/modproto.py` is its reference.
+  `tools/vmfd.py` is an eight-key MFD in a window. All eight of the first
+  milestone's keys work against a live game, 1-7 ms from key to lamp.
+- **One cockpit, two games.** `bridge.py --game firestorm` drives
+  Firestorm (MW4 5.07, the Tesla II pod) through firestorm-shim's virtual RIO
+  board instead: `profiles/firestorm-5.07` and `layouts/firestorm-mfds` put
+  its five MFDs' keys and lamps on the same modules.
+- **Conformance 295/295**: two new checkpoints that the panel streams in
+  live play, and the bridge's and protocol's self-checks. The checkpoints
+  that measure a game in motion exactly (4O, 4P, 4R, the pool) run with
+  `--rio-baud 0`, the transmitter they were recorded with, until they are
+  re-recorded.
+- **A gamepad** in `cockpit.exe`: left stick throttle, sticks steer, right
+  trigger fires, A targets, Y the searchlight, D-pad throttle full and stop.
+
 - **Every image in the archive.** The 131 type 7 payloads - 607 KB - are
   packed images, and the renderer's own decompressor (`0xFE0090F0`) reads them:
   all 131 unpack to exactly their declared size. Skies, panoramas, the drop

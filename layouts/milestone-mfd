@@ -1,0 +1,25 @@
+# The first milestone: one MFD, "MFD C" in docs/HARDWARE_MAPPING.md, eight
+# lit keys under a 320x240 screen. A layout puts profile names on modules;
+# the module is found by its unique id, never by port.
+#
+#   module NAME CLASS UID
+#   NAME key INDEX LOGICAL [LABEL]     keys 1-4 above the screen, 5-8 below
+#   NAME text FIELD X Y SIZE LOGICAL
+#   NAME bar FIELD X Y W H MAX LOGICAL
+
+module mfd:C mfd vmfd-C
+
+mfd:C key 1 func.radar RADAR
+mfd:C key 2 func.map MAP
+mfd:C key 3 func.damage DAMAGE
+mfd:C key 4 func.target TARGET
+mfd:C key 5 func.radar2km 2 KM
+mfd:C key 6 func.zoomin ZOOM+
+mfd:C key 7 func.zoomout ZOOM-
+mfd:C key 8 func.indirect INDIRECT
+
+mfd:C text 1 8 70 2 message
+mfd:C text 2 8 130 2 engine
+mfd:C text 3 250 130 3 readout
+mfd:C text 4 8 170 1 weapon.0.name
+mfd:C bar 5 120 170 120 10 8 weapon.0.bar

@@ -21,4 +21,5 @@ build-*/
 setup.log
 .vwe
 Play.cmd
+Cockpit.cmd
 /play

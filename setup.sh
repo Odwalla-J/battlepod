@@ -89,6 +89,8 @@ MINGW*|MSYS*)
     w=$(cygpath -w "$PWD")
     printf '@echo off\r\nset MSYSTEM=MINGW64\r\nset CHERE_INVOKING=1\r\ncd /d "%s"\r\n"%s" -lc "VWE_GAME_FILES=\\"%s\\" tools/play.sh %%*"\r\n' \
         "$w" "$(cygpath -w /usr/bin/bash.exe)" "$GF" > Play.cmd
+    printf '@echo off\r\nset MSYSTEM=MINGW64\r\nset CHERE_INVOKING=1\r\ncd /d "%s"\r\n"%s" -lc "VWE_GAME_FILES=\\"%s\\" tools/cockpit.sh %%*"\r\n' \
+        "$w" "$(cygpath -w /usr/bin/bash.exe)" "$GF" > Cockpit.cmd
     launcher=Play.cmd ;;
 *)
     printf '#!/bin/sh\ncd "$(dirname "$0")"\nVWE_GAME_FILES="$(cat .vwe)" exec tools/play.sh "$@"\n' > play
@@ -97,3 +99,4 @@ MINGW*|MSYS*)
 esac
 say ""
 say "Done. Start a game with $launcher (W/S throttle, A/D stick, space fires, T targets, Esc quits)."
+if [ -f Cockpit.cmd ]; then say "Cockpit.cmd does the same with a virtual cockpit MFD beside it."; fi

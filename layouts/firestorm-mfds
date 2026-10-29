@@ -1,0 +1,55 @@
+# Firestorm's five MFDs on five eight-key modules, left to right as the pod
+# had them. The game draws the MFD pictures, labels and all; a module's
+# screen is the shim's MFD window (or the LCD behind the keys), so only keys
+# and lamps go through here. The labels are what each key does in a mission
+# by default, for a virtual module.
+
+module mfd:1 mfd vmfd-1
+mfd:1 key 1 mfd1.k1
+mfd:1 key 2 mfd1.k2
+mfd:1 key 3 mfd1.k3
+mfd:1 key 4 mfd1.k4
+mfd:1 key 5 mfd1.k5
+mfd:1 key 6 mfd1.k6
+mfd:1 key 7 mfd1.k7
+mfd:1 key 8 mfd1.k8
+
+module mfd:2 mfd vmfd-2
+mfd:2 key 1 mfd2.k1
+mfd:2 key 2 mfd2.k2 NEXT WP
+mfd:2 key 3 mfd2.k3 PREV WP
+mfd:2 key 4 mfd2.k4 OBJECTIVES
+mfd:2 key 5 mfd2.k5
+mfd:2 key 6 mfd2.k6
+mfd:2 key 7 mfd2.k7
+mfd:2 key 8 mfd2.k8
+
+module mfd:3 mfd vmfd-3
+mfd:3 key 1 mfd3.k1 MUTE
+mfd:3 key 2 mfd3.k2 NEAR EN
+mfd:3 key 3 mfd3.k3 XHAIR TGT
+mfd:3 key 4 mfd3.k4 ARMOR
+mfd:3 key 5 mfd3.k5 ZOOM
+mfd:3 key 6 mfd3.k6 JUMP
+mfd:3 key 7 mfd3.k7 FLUSH
+mfd:3 key 8 mfd3.k8 LT AMP
+
+module mfd:4 mfd vmfd-4
+mfd:4 key 1 mfd4.k1 NEAR FR
+mfd:4 key 2 mfd4.k2 NEXT FR
+mfd:4 key 3 mfd4.k3 PREV FR
+mfd:4 key 4 mfd4.k4 TGT MODE
+mfd:4 key 5 mfd4.k5 NEAR EN
+mfd:4 key 6 mfd4.k6 NEXT EN
+mfd:4 key 7 mfd4.k7 PREV EN
+mfd:4 key 8 mfd4.k8 XHAIR TGT
+
+module mfd:5 mfd vmfd-5
+mfd:5 key 1 mfd5.k1 GRP FIRE
+mfd:5 key 2 mfd5.k2 CHAIN
+mfd:5 key 3 mfd5.k3 NEXT WPN
+mfd:5 key 4 mfd5.k4 PREV WPN
+mfd:5 key 5 mfd5.k5 MODE
+mfd:5 key 6 mfd5.k6 GROUP 1
+mfd:5 key 7 mfd5.k7 GROUP 2
+mfd:5 key 8 mfd5.k8 GROUP 3

@@ -1,0 +1,134 @@
+# Firestorm (MW4 5.07, the Tesla II pod) under firestorm-shim: its RIO
+# button and lamp ids, by name. A key and its lamp share an id. Each MFD's
+# board has a base; its top row is base+7..base+4 left to right, its
+# bottom row base+3..base+0 - firestorm-shim's docs/RIO.md, confirmed
+# against a running mission. The game draws each key's label on the MFD's
+# own screen, so names here are positions, not functions.
+
+# MFD 1, base 28
+lamp 2F mfd1.k1
+button 2F mfd1.k1
+lamp 2E mfd1.k2
+button 2E mfd1.k2
+lamp 2D mfd1.k3
+button 2D mfd1.k3
+lamp 2C mfd1.k4
+button 2C mfd1.k4
+lamp 2B mfd1.k5
+button 2B mfd1.k5
+lamp 2A mfd1.k6
+button 2A mfd1.k6
+lamp 29 mfd1.k7
+button 29 mfd1.k7
+lamp 28 mfd1.k8
+button 28 mfd1.k8
+
+# MFD 2, base 20
+lamp 27 mfd2.k1
+button 27 mfd2.k1
+lamp 26 mfd2.k2
+button 26 mfd2.k2
+lamp 25 mfd2.k3
+button 25 mfd2.k3
+lamp 24 mfd2.k4
+button 24 mfd2.k4
+lamp 23 mfd2.k5
+button 23 mfd2.k5
+lamp 22 mfd2.k6
+button 22 mfd2.k6
+lamp 21 mfd2.k7
+button 21 mfd2.k7
+lamp 20 mfd2.k8
+button 20 mfd2.k8
+
+# MFD 3, base 30
+lamp 37 mfd3.k1
+button 37 mfd3.k1
+lamp 36 mfd3.k2
+button 36 mfd3.k2
+lamp 35 mfd3.k3
+button 35 mfd3.k3
+lamp 34 mfd3.k4
+button 34 mfd3.k4
+lamp 33 mfd3.k5
+button 33 mfd3.k5
+lamp 32 mfd3.k6
+button 32 mfd3.k6
+lamp 31 mfd3.k7
+button 31 mfd3.k7
+lamp 30 mfd3.k8
+button 30 mfd3.k8
+
+# MFD 4, base 08
+lamp 0F mfd4.k1
+button 0F mfd4.k1
+lamp 0E mfd4.k2
+button 0E mfd4.k2
+lamp 0D mfd4.k3
+button 0D mfd4.k3
+lamp 0C mfd4.k4
+button 0C mfd4.k4
+lamp 0B mfd4.k5
+button 0B mfd4.k5
+lamp 0A mfd4.k6
+button 0A mfd4.k6
+lamp 09 mfd4.k7
+button 09 mfd4.k7
+lamp 08 mfd4.k8
+button 08 mfd4.k8
+
+# MFD 5, base 00
+lamp 07 mfd5.k1
+button 07 mfd5.k1
+lamp 06 mfd5.k2
+button 06 mfd5.k2
+lamp 05 mfd5.k3
+button 05 mfd5.k3
+lamp 04 mfd5.k4
+button 04 mfd5.k4
+lamp 03 mfd5.k5
+button 03 mfd5.k5
+lamp 02 mfd5.k6
+button 02 mfd5.k6
+lamp 01 mfd5.k7
+button 01 mfd5.k7
+lamp 00 mfd5.k8
+button 00 mfd5.k8
+
+# the radar: above 18-1D, below 10-15, left to right as the game draws it
+lamp 18 radar.range
+button 18 radar.range
+lamp 19 radar.mode
+button 19 radar.mode
+lamp 1A radar.lightamp
+button 1A radar.lightamp
+lamp 1B radar.searchlight
+button 1B radar.searchlight
+lamp 1C radar.autocentre
+button 1C radar.autocentre
+lamp 1D radar.pilotmode
+button 1D radar.pilotmode
+lamp 10 radar.zoom
+button 10 radar.zoom
+lamp 11 radar.shutdown
+button 11 radar.shutdown
+lamp 12 radar.auxmode
+button 12 radar.auxmode
+lamp 13 radar.flush
+button 13 radar.flush
+lamp 14 radar.crouch
+button 14 radar.crouch
+lamp 15 radar.progmode
+button 15 radar.progmode
+
+# the stick and throttle. The stick's three buttons fire weapon groups 1-3
+# (confirmed in a mission: 40 the trigger, 47 and 46); holding all three fires
+# every group. A fourth stick button is read by the game but never reported
+# by the board, and does nothing.
+button 40 fire.group1
+button 47 fire.group2
+button 46 fire.group3
+button 3F throttle.button
+button 3E panic
+lamp 1E lamp.1E
+lamp 3B lamp.3B

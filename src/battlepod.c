@@ -109,9 +109,28 @@ static unsigned g_wtrap_n;
 static uint32_t g_duart;		/* base address, 0 = not modelled */
 static char     g_conbuf[CONCAP];	/* channel B output: the console */
 static size_t   g_conlen;
-#define RIOCAP 8192
-static uint8_t  g_riobuf[RIOCAP];	/* channel A output: the Remote I/O protocol */
+/* Channel A output, the Remote I/O protocol. The first RIOCAP bytes are
+ * kept for the end-of-run report; the stream itself goes through a ring that
+ * every consumer - the panel windows, --rio-dump, --rio-port - reads with a
+ * cursor of its own (rio_since). g_rio_tx counts every byte ever sent. */
+#define RIOCAP  8192
+#define RIORING 65536			/* a power of two */
+static uint8_t  g_riobuf[RIOCAP];
+static uint8_t  g_rioring[RIORING];
 static uint32_t g_rio_tx;
+static FILE    *g_riodump_f;
+
+/* A real 68681 takes a byte time to send each byte, and the firmware relies
+ * on it: rio_send enables the transmitter one instruction before it marks
+ * the link busy, and a transmitter that is ready again at once drains the
+ * queue in between, switches itself off, and leaves the busy flag set for
+ * ever (docs/COCKPIT_INTERFACE.md, Defects, 1). So after each byte channel A
+ * is busy for a byte time, in instructions: --rio-baud sets the line speed
+ * it is worked out from, a calibration rather than a measurement. 0 is the
+ * old infinitely fast transmitter. */
+static unsigned g_rio_baud = 9600;
+static uint32_t g_rio_byte;		/* instructions per byte, from the baud */
+static uint32_t g_txbusy;		/* instructions until TxRDYA comes back */
 
 static const char *g_in[2];		/* pending receive data, per channel */
 static size_t      g_inlen[2], g_inpos[2];
@@ -154,12 +173,12 @@ static int duart_reg(uint32_t a)
 }
 
 /* MC68681 interrupt status: bit 0 TxRDYA, 1 RxRDYA, 4 TxRDYB, 5 RxRDYB.
- * The transmitter is modelled as infinitely fast, so TxRDY simply tracks
- * whether that channel's transmitter is enabled - which is what makes the
- * firmware's "disable the transmitter when the queue drains" idiom work. */
+ * TxRDY tracks whether that channel's transmitter is enabled - which is what
+ * makes the firmware's "disable the transmitter when the queue drains" idiom
+ * work - and, on channel A, whether the last byte has had its byte time. */
 static unsigned duart_isr(void)
 {
-	return (g_txena[0]     ? 0x01u : 0)
+	return (g_txena[0] && !g_txbusy ? 0x01u : 0)
 	     | (rx_pending(0)  ? 0x02u : 0)
 	     | (g_txena[1]     ? 0x10u : 0)
 	     | (rx_pending(1)  ? 0x20u : 0);
@@ -174,7 +193,7 @@ static int duart_read(uint32_t a, unsigned *out)
 
 	switch (reg & 7) {
 	case 1:					/* SRA / SRB */
-		*out = (g_txena[chan] ? DUART_SR_TXRDY | DUART_SR_TXEMT : 0)
+		*out = (g_txena[chan] && !(chan == 0 && g_txbusy) ? DUART_SR_TXRDY | DUART_SR_TXEMT : 0)
 		     | (rx_pending(chan) ? DUART_SR_RXRDY : 0);
 		return 1;
 	case 3:					/* RBA / RBB */
@@ -203,7 +222,10 @@ static int duart_write(uint32_t a, unsigned v)
 			if (g_conlen < CONCAP - 1) g_conbuf[g_conlen++] = (char)(v & 0xFF);
 		} else {
 			if (g_rio_tx < RIOCAP) g_riobuf[g_rio_tx] = (uint8_t)v;
+			g_rioring[g_rio_tx & (RIORING - 1)] = (uint8_t)v;
 			g_rio_tx++;
+			if (g_riodump_f) fputc((int)(v & 0xFF), g_riodump_f);
+			g_txbusy = g_rio_byte;
 		}
 		break;
 	case 4:
@@ -276,8 +298,50 @@ static char *unescape(const char *s)
  * decoder itself lives in src/rio.h, because the panel renderer consumes the
  * same bytes: that stream is the seam, not an interface of ours. */
 
-static struct rio_panel g_panel;
+#ifdef BATTLEPOD_SDL
+static struct rio_panel g_panel;	/* what the panel windows draw */
+#endif
 static const char *g_riodump;
+
+/* The bytes sent since a consumer's cursor, up to max, and the cursor moved
+ * past them. One that fell more than the ring behind loses the oldest. */
+static uint32_t rio_since(uint32_t *cur, uint8_t *out, uint32_t max)
+{
+	uint32_t n, i;
+
+	if (g_rio_tx - *cur > RIORING) *cur = g_rio_tx - RIORING;
+	n = g_rio_tx - *cur;
+	if (n > max) n = max;
+	for (i = 0; i < n; i++) out[i] = g_rioring[(*cur + i) & (RIORING - 1)];
+	*cur += n;
+	return n;
+}
+
+/* A panel kept up to date from the stream: what it has not yet walked - a
+ * message cut short by the poll - is held over to the next call. */
+struct rio_reader {
+	uint32_t cur;
+	uint32_t npend;
+	uint8_t  pend[4096];
+};
+
+static void rio_feed(struct rio_reader *r, struct rio_panel *p)
+{
+	for (;;) {
+		uint32_t got = rio_since(&r->cur, r->pend + r->npend, sizeof r->pend - r->npend);
+		uint32_t used;
+		if (!got) return;
+		r->npend += got;
+		used = rio_walk(p, r->pend, r->npend);
+		if (!used && r->npend == sizeof r->pend) used = r->npend;	/* never wedge */
+		memmove(r->pend, r->pend + used, r->npend - used);
+		r->npend -= used;
+	}
+}
+
+/* The whole run's panel state, for the report. */
+static struct rio_panel g_rio_all;
+static struct rio_reader g_rio_all_r;
 /* Look at memory when the run ends. --watch says what touched an address and
  * --tap says what the registers held somewhere; this just reads, which is what
  * checking a configuration byte wants. */
@@ -303,21 +367,27 @@ static const char *g_liveframes;
 
 static void rio_report(void)
 {
-	uint32_t n = g_rio_tx < RIOCAP ? g_rio_tx : RIOCAP;
+	const struct rio_panel *p = &g_rio_all;
 	int i, any;
 
-	rio_walk(&g_panel, g_riobuf, n);
+	rio_feed(&g_rio_all_r, &g_rio_all);
 
-	printf("\nremote i/o: %u frames decoded%s\n", g_panel.frames,
-	       g_panel.bad ? " (checksum or framing errors)" : "");
+	printf("\nremote i/o: %u frames decoded%s\n", p->frames,
+	       p->bad ? " (checksum or framing errors)" : "");
+	if (p->raw)
+		printf("remote i/o: %u raw messages (a game's unframed stream)\n", p->raw);
 
 	any = 0;
 	for (i = 0; i < RIO_LAMP_MAX; i++)
-		if (g_panel.lamp_set[i]) { printf("  lamp %02X brightness %02X\n", i, g_panel.lamp[i]); any = 1; }
+		if (p->lamp_set[i]) { printf("  lamp %02X brightness %02X\n", i, p->lamp[i]); any = 1; }
 	for (i = RIO_DEV_LO; i < RIO_DEV_HI; i++)
-		if (g_panel.bar_set[i]) { printf("  bargraph %02X bars %u\n", i, g_panel.bar[i]); any = 1; }
+		if (p->bar_set[i]) { printf("  bargraph %02X bars %u\n", i, p->bar[i]); any = 1; }
 	for (i = RIO_DEV_LO; i < RIO_DEV_HI; i++)
-		if (g_panel.text_set[i]) { printf("  display %02X \"%.8s\"\n", i, g_panel.text[i]); any = 1; }
+		if (p->text_set[i]) { printf("  display %02X \"%.8s\"\n", i, p->text[i]); any = 1; }
+	for (i = RIO_DEV_LO; i < RIO_DEV_HI; i++)
+		if (p->field_set[i]) { printf("  field %02X \"%.2s\"\n", i, p->field[i]); any = 1; }
+	for (i = 0; i < 6; i++)
+		if (p->ctl[i]) printf("  %02X sent %u times\n", 0xD5 + i, p->ctl[i]);
 	if (!any) printf("  no panel state changed\n");
 }
 
@@ -326,13 +396,10 @@ static void rio_report(void)
  * at the wire. */
 static void rio_dump(const char *path)
 {
-	uint32_t n = g_rio_tx < RIOCAP ? g_rio_tx : RIOCAP;
-	FILE *f = fopen(path, "wb");
-
-	if (!f) { fprintf(stderr, "cannot write %s\n", path); return; }
-	fwrite(g_riobuf, 1, n, f);
-	fclose(f);
-	printf("remote i/o: %u bytes written to %s\n", n, path);
+	if (!g_riodump_f) return;
+	fclose(g_riodump_f);
+	g_riodump_f = NULL;
+	printf("remote i/o: %u bytes written to %s\n", g_rio_tx, path);
 }
 
 /* Stop and look when the firmware reaches an address.
@@ -1524,7 +1591,6 @@ static SDL_Texture *g_vt;
 static uint8_t *g_frames_buf;
 static long g_frames_n;
 static int g_view_w = 480, g_view_h = 360;
-static uint32_t g_live_at;		/* how far the panel has been walked */
 static int g_quit;
 
 static int live_open(const char *frames)
@@ -1535,6 +1601,9 @@ static int live_open(const char *frames)
 		fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
 		return 0;
 	}
+	/* A gamepad is a convenience, not a need: no controller support, no pad. */
+	if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0)
+		fprintf(stderr, "no gamepad support: %s\n", SDL_GetError());
 	for (i = 0; i < NPANELS; i++) {
 		g_lw[i] = SDL_CreateWindow(PANELS[i].title, SDL_WINDOWPOS_UNDEFINED,
 					   SDL_WINDOWPOS_UNDEFINED, PANELS[i].w,
@@ -1661,16 +1730,75 @@ static void live_key(SDL_Keycode k, int down, int repeat)
 	}
 }
 
+/* A gamepad, through SDL's controller mapping (an Xbox pad, or anything SDL
+ * knows): the left stick's Y moves the throttle lever - push to open, pull
+ * to close - and either stick's X is the stick; the right trigger fires (A5),
+ * A is target select (40), Y the searchlight (20); D-pad up and down open
+ * and close the throttle all the way. The same reports the keyboard sends,
+ * sent when they change. */
+static SDL_GameController *g_pad;
+
+static void live_pad(void)
+{
+	static int sent_l = -1, sent_r = -1, fire, target, light;
+	int ly, steer, l, r, v;
+
+	if (!g_pad) {
+		int i;
+		for (i = 0; i < SDL_NumJoysticks() && !g_pad; i++)
+			if (SDL_IsGameController(i) && (g_pad = SDL_GameControllerOpen(i)))
+				printf("gamepad: %s\n", SDL_GameControllerName(g_pad));
+		if (!g_pad) return;
+	}
+	if (!SDL_GameControllerGetAttached(g_pad)) {
+		SDL_GameControllerClose(g_pad);
+		g_pad = NULL;
+		return;
+	}
+#define PAD_AXIS(a) SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_##a)
+#define PAD_BTN(b) SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_##b)
+#define DEAD(v) ((v) > 7000 || (v) < -7000 ? (v) : 0)
+	ly = -DEAD(PAD_AXIS(LEFTY));			/* up is negative */
+	steer = DEAD(PAD_AXIS(LEFTX));
+	if (abs(DEAD(PAD_AXIS(RIGHTX))) > abs(steer)) steer = DEAD(PAD_AXIS(RIGHTX));
+
+	v = g_live_throttle + ly * 0x20 / 32767;	/* about a second, end to end */
+	if (PAD_BTN(DPAD_UP)) v = 0x340;
+	if (PAD_BTN(DPAD_DOWN)) v = 0;
+	if (v < 0) v = 0;
+	if (v > 0x340) v = 0x340;
+	if (v != g_live_throttle) { g_live_throttle = v; live_analog(0xA0, v); }
+
+	if (steer && !g_live_moded) {			/* as the keyboard's first turn */
+		live_button(0x33, 1); live_button(0x33, 0);
+		live_button(0x31, 1); live_button(0x31, 0);
+		g_live_moded = 1;
+	}
+	l = steer < 0 ? -steer * 0x80 / 32768 : 0;
+	r = steer > 0 ? steer * 0x80 / 32768 : 0;
+	if (l != sent_l) { sent_l = l; live_analog(0xA1, l); }
+	if (r != sent_r) { sent_r = r; live_analog(0xA2, r); }
+
+	v = PAD_AXIS(TRIGGERRIGHT) > 8000;
+	if (v != fire) { fire = v; live_button(0xA5, v); }
+	v = PAD_BTN(A);
+	if (v != target) { target = v; live_button(0x40, v); }
+	v = PAD_BTN(Y);
+	if (v != light) { light = v; live_button(0x20, v); }
+#undef PAD_AXIS
+#undef PAD_BTN
+#undef DEAD
+}
+
 /* Called from the run loop. Walks whatever new Remote I/O bytes the firmware
  * has put on the wire since last time, redraws, and pumps events. */
 static void live_pump(uint64_t step)
 {
-	uint32_t have = g_rio_tx < RIOCAP ? g_rio_tx : RIOCAP;
+	static struct rio_reader rd;
 	SDL_Event e;
 	int i;
 
-	if (have > g_live_at)
-		g_live_at += rio_walk(&g_panel, g_riobuf + g_live_at, have - g_live_at);
+	rio_feed(&rd, &g_panel);
 
 	while (SDL_PollEvent(&e)) {
 		if (e.type == SDL_QUIT) g_quit = 1;
@@ -1678,6 +1806,7 @@ static void live_pump(uint64_t step)
 		if (g_capture && (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP))
 			live_key(e.key.keysym.sym, e.type == SDL_KEYDOWN, e.key.repeat);
 	}
+	if (g_capture) live_pad();
 	if (g_vt && g_capture) {
 		/* The pod's own latest frame, drawn from its own camera. */
 		static struct raster f;
@@ -1987,6 +2116,89 @@ static void net_poll(uint32_t now)
 		if (buf[0] == 'P' && n > 1) pkt_add_raw(buf + 1, (uint32_t)(n - 1));
 		else if (buf[0] == 'R' && n > 1) rx_append(buf + 1, (size_t)(n - 1));
 		else if (buf[0] == 'Q') g_net_quit = 1;
+	}
+}
+
+/* --rio-port HOST:PORT: the Remote I/O link on UDP, for a cockpit bridge -
+ * real hardware, or panel windows in another process.
+ *
+ *   pod -> bridge  'r' bytes   channel A as transmitted, framed or raw,
+ *                              unaltered: the bridge decodes, not the pod
+ *                  'H'         hello: every half second until the bridge
+ *                              answers, then every five, so a bridge
+ *                              started later finds the pod
+ *   bridge -> pod  'R' bytes   for channel A's receiver, as --net's 'R'
+ *                  'H'         hello: answered 'A', and the stream is sent
+ *                              again from the oldest byte the ring holds,
+ *                              so a new bridge sees the panel as it stands
+ *                  'A'         acknowledge
+ * Polled with --net's cadence, every 4096 instructions. docs/api.md. */
+static net_sock g_rp_sock = NET_BAD;
+static struct sockaddr_in g_rp_to;
+static int g_rp_heard;
+static uint32_t g_rp_cur, g_rp_hello_at, g_rp_in, g_rp_out;
+
+static int rioport_open(const char *spec)
+{
+	char host[256];
+	const char *colon = strrchr(spec, ':');
+	size_t hl;
+
+	if (!colon || (hl = (size_t)(colon - spec)) >= sizeof host) return 0;
+	memcpy(host, spec, hl);
+	host[hl] = 0;
+#ifdef _WIN32
+	{
+		WSADATA w;
+		u_long on = 1;
+		if (WSAStartup(MAKEWORD(2, 2), &w)) return 0;
+		g_rp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (g_rp_sock == NET_BAD) return 0;
+		ioctlsocket(g_rp_sock, FIONBIO, &on);
+	}
+#else
+	g_rp_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (g_rp_sock == NET_BAD) return 0;
+	fcntl(g_rp_sock, F_SETFL, fcntl(g_rp_sock, F_GETFL) | O_NONBLOCK);
+#endif
+	memset(&g_rp_to, 0, sizeof g_rp_to);
+	g_rp_to.sin_family = AF_INET;
+	g_rp_to.sin_port = htons((unsigned short)atoi(colon + 1));
+	g_rp_to.sin_addr.s_addr = inet_addr(host[0] ? host : "127.0.0.1");
+	return 1;
+}
+
+static void rioport_send(const uint8_t *d, int n)
+{
+	sendto(g_rp_sock, (const char *)d, n, 0, (struct sockaddr *)&g_rp_to, sizeof g_rp_to);
+}
+
+static void rioport_poll(uint32_t now)
+{
+	uint8_t buf[1025];
+	uint32_t got;
+	int n;
+
+	if (g_rp_sock == NET_BAD) return;
+	if (now - g_rp_hello_at >= (g_rp_heard ? 500u : 50u)) {
+		buf[0] = 'H';
+		rioport_send(buf, 1);
+		g_rp_hello_at = now;
+	}
+	buf[0] = 'r';
+	while ((got = rio_since(&g_rp_cur, buf + 1, sizeof buf - 1)) > 0) {
+		rioport_send(buf, (int)got + 1);
+		g_rp_out++;
+	}
+	while ((n = recvfrom(g_rp_sock, (char *)buf, sizeof buf, 0, NULL, NULL)) > 0) {
+		g_rp_heard = 1;
+		g_rp_in++;
+		if (buf[0] == 'R' && n > 1) rx_append(buf + 1, (size_t)(n - 1));
+		else if (buf[0] == 'H') {
+			buf[0] = 'A';
+			rioport_send(buf, 1);
+			g_rp_cur = g_rio_tx > RIORING ? g_rio_tx - RIORING : 0;	/* replay */
+		}
 	}
 }
 
@@ -3363,6 +3575,11 @@ static void usage(void)
 	"  --astub [ADDR]   stand in for the audio board (default 50001000):\n"
 	"                   answer the signature and drain its download ring\n"
 	"                   as fast as the 68020 fills it\n"
+	"  --rio-baud N     the Remote I/O line's speed, which paces channel A's\n"
+	"                   transmitter (default 9600; 0: every byte at once)\n"
+	"  --rio-port H:P   the Remote I/O link on UDP for a cockpit bridge: 'r'\n"
+	"                   datagrams out, 'R' in (docs/api.md)\n"
+	"  --rio-dump FILE  every byte the pod sends the panel, as sent\n"
 	"  --rirq [LEVEL]   let the renderer finish a frame: raise its vector 0x42\n"
 	"                   interrupt after every render (default level 5)\n"
 	"  --rstub ADDR     stand in for the TMS340 renderer: comm block at ADDR,\n"
@@ -3489,6 +3706,10 @@ int main(int argc, char **argv)
 			set_val[nset++] = (*c == '=') ? (uint32_t)strtoul(c + 1, NULL, 16) : 0;
 		}
 		else if (!strcmp(a, "--rio-dump") && i + 1 < argc) g_riodump = argv[++i];
+		else if (!strcmp(a, "--rio-baud") && i + 1 < argc) g_rio_baud = (unsigned)strtoul(argv[++i], NULL, 0);
+		else if (!strcmp(a, "--rio-port") && i + 1 < argc) {
+			if (!rioport_open(argv[++i])) { fprintf(stderr, "--rio-port wants HOST:PORT\n"); return 1; }
+		}
 		else if (!strcmp(a, "--mesh") && i + 1 < argc)
 			g_mesh_id = (uint32_t)strtoul(argv[++i], NULL, 0);
 		else if (!strcmp(a, "--mesh-all")) g_mesh_all = 1;
@@ -3733,6 +3954,9 @@ int main(int argc, char **argv)
 	if (g_live && !live_open(g_liveframes)) return 1;
 #endif
 	if (g_recpath) rec_open();
+	g_rio_byte = g_rio_baud ? (uint32_t)((uint64_t)g_clock_div * 1000 / g_rio_baud) : 0;
+	if (g_riodump && !(g_riodump_f = fopen(g_riodump, "wb")))
+		fprintf(stderr, "cannot write %s\n", g_riodump);
 	printf("running...\n\n");
 
 	for (step = 0; step < budget; step++) {
@@ -3745,7 +3969,12 @@ int main(int argc, char **argv)
 			m68k_set_irq((unsigned)lvl);
 		}
 		if ((step % g_clock_div) == 0) clock_tick();
+		if (g_txbusy) g_txbusy--;
 		if (g_net && (step & 0xFFF) == 0) net_poll(g_clock_val);
+		if ((step & 0xFFF) == 0) {
+			if (g_rp_sock != NET_BAD) rioport_poll(g_clock_val);
+			if (g_rio_all_r.cur != g_rio_tx) rio_feed(&g_rio_all_r, &g_rio_all);
+		}
 		if (g_realtime && (step & 0xFFF) == 0) realtime_pace();
 		if (g_rec && (step & 0xFFF) == 0) rec_poll();
 		if (g_monstub && (pc - g_monstub) < MON_SLOTS * MON_STUB_SZ &&
@@ -3871,6 +4100,8 @@ int main(int argc, char **argv)
 	if (g_mesh_id) mesh_report();
 
 	if (g_rio_tx && g_riodump) rio_dump(g_riodump);
+	if (g_rp_sock != NET_BAD)
+		printf("rio port: %u datagrams in, %u out\n", g_rp_in, g_rp_out);
 
 	if (g_rio_tx) {
 		uint32_t i, n = g_rio_tx < RIOCAP ? g_rio_tx : RIOCAP;

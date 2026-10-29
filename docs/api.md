@@ -63,6 +63,31 @@ sends, in `R` datagrams:
 `cockpit.exe --live-pod` builds the same reports from the keyboard
 (`live_key` in `src/battlepod.c`).
 
+## The cockpit's port
+
+`--rio-port HOST:PORT` puts the Remote I/O link - DUART channel A, the
+panel's lamps, displays and buttons - on UDP of its own, for a cockpit
+bridge: real panel hardware, or panel windows in another process. The pod
+sends to HOST:PORT; the bridge answers to whatever address that came from.
+It is polled with `--net`'s cadence, every 4096 instructions.
+
+| from | byte 0 | then | meaning |
+|---|---|---|---|
+| pod | `H` | - | hello: every 50 hundredths of the pod's clock until anything comes back, then every 500, so a bridge started later finds the pod |
+| pod | `r` | Remote I/O bytes | channel A exactly as transmitted, up to 1024 a datagram: framed at boot, raw in a game ([COCKPIT_INTERFACE.md](COCKPIT_INTERFACE.md), *Every output opcode*). The pod does not decode them; `src/rio.h`'s `rio_walk` does |
+| bridge | `H` | - | hello; the pod answers `A` and sends the stream again from the oldest byte it holds (64 KB), so a bridge that arrives mid-game sees the panel as it stands. A bridge sends it to a pod it has not heard before |
+| bridge | `A` | - | heard you; any datagram stops the hellos |
+| bridge | `R` | Remote I/O bytes | appended to channel A's receiver, as the hub's `R` - the reports in *Panel input* |
+
+Bytes, not decoded state, so the emulator never needs to know a lamp from a
+display, and a capture of the port is a capture of the wire. A bridge that
+falls behind by more than 64 KB loses the oldest bytes.
+
+`tools/riobridge.py` is the smallest bridge: it prints what the pod lights
+and writes, and sends button and analog reports typed at it.
+
+Source: `rioport_poll` in `src/battlepod.c`.
+
 ## Example
 
 ```
