@@ -13,8 +13,16 @@ export TEMP   := $(TMPDIR)
 
 all: $(BUILD)/ddraw.dll $(BUILD)/fsrun.exe
 
-$(BUILD)/ddraw.dll: src/ddraw.c src/ddraw.def | $(BUILD)/tmp
-	$(CC) $(CFLAGS) -shared -static-libgcc -o $@ src/ddraw.c src/ddraw.def -ldxguid -lgdi32 -luser32 -lws2_32
+$(BUILD)/ddraw.dll: src/ddraw.c src/mfdstream.c src/mfdstream.h src/ddraw.def | $(BUILD)/tmp
+	$(CC) $(CFLAGS) -shared -static-libgcc -o $@ src/ddraw.c src/mfdstream.c src/ddraw.def -ldxguid -lgdi32 -luser32 -lws2_32
+
+# The MFD stream's encoder alone, and the tests that hold it to the Python
+# reference (tools/test_mfdstream.py, which needs only Python).
+$(BUILD)/streamtest.exe: tests/streamtest.c src/mfdstream.c src/mfdstream.h | $(BUILD)/tmp
+	$(CC) $(CFLAGS) -static-libgcc -o $@ tests/streamtest.c src/mfdstream.c
+
+test: $(BUILD)/streamtest.exe
+	python ../tools/test_mfdstream.py
 
 $(BUILD)/fsrun.exe: src/fsrun.c | $(BUILD)/tmp
 	$(CC) $(CFLAGS) -static-libgcc -o $@ src/fsrun.c
@@ -31,4 +39,4 @@ uninstall:
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all install uninstall clean
+.PHONY: all install uninstall clean test

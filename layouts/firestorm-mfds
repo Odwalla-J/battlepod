@@ -3,8 +3,13 @@
 # screen is the shim's MFD window (or the LCD behind the keys), so only keys
 # and lamps go through here. The labels are what each key does in a mission
 # by default, for a virtual module.
+#
+# "display N" streams MFD N's picture to the module, when the shim streams
+# ([stream] enable = 1) and the module has a framebuffer (tools/mfdrecv.py,
+# docs/MFD_STREAMING_PROTOCOL.md); a module without one ignores it.
 
 module mfd:1 mfd vmfd-1
+mfd:1 display 1
 mfd:1 key 1 mfd1.k1
 mfd:1 key 2 mfd1.k2
 mfd:1 key 3 mfd1.k3
@@ -15,6 +20,7 @@ mfd:1 key 7 mfd1.k7
 mfd:1 key 8 mfd1.k8
 
 module mfd:2 mfd vmfd-2
+mfd:2 display 2
 mfd:2 key 1 mfd2.k1
 mfd:2 key 2 mfd2.k2 NEXT WP
 mfd:2 key 3 mfd2.k3 PREV WP
@@ -25,6 +31,7 @@ mfd:2 key 7 mfd2.k7
 mfd:2 key 8 mfd2.k8
 
 module mfd:3 mfd vmfd-3
+mfd:3 display 3
 mfd:3 key 1 mfd3.k1 MUTE
 mfd:3 key 2 mfd3.k2 NEAR EN
 mfd:3 key 3 mfd3.k3 XHAIR TGT
@@ -35,6 +42,7 @@ mfd:3 key 7 mfd3.k7 FLUSH
 mfd:3 key 8 mfd3.k8 LT AMP
 
 module mfd:4 mfd vmfd-4
+mfd:4 display 4
 mfd:4 key 1 mfd4.k1 NEAR FR
 mfd:4 key 2 mfd4.k2 NEXT FR
 mfd:4 key 3 mfd4.k3 PREV FR
@@ -45,6 +53,7 @@ mfd:4 key 7 mfd4.k7 PREV EN
 mfd:4 key 8 mfd4.k8 XHAIR TGT
 
 module mfd:5 mfd vmfd-5
+mfd:5 display 5
 mfd:5 key 1 mfd5.k1 GRP FIRE
 mfd:5 key 2 mfd5.k2 CHAIN
 mfd:5 key 3 mfd5.k3 NEXT WPN

@@ -27,6 +27,7 @@ MSYS2 with the 32-bit toolchain (`pacman -S mingw-w64-i686-gcc`), then:
 make            # build/ddraw.dll, build/fsrun.exe
 make install    # copy both into $(GAME), default ../firestorm-run/MW4
 make uninstall
+make test       # the MFD stream's encoder against tools/mfdstream.py (needs Python)
 ```
 
 Stop every `MW4.exe` and `Launcher.exe` before `make install`: a running copy
@@ -207,6 +208,23 @@ puts the five MFDs' keys and lamps on cockpit modules - real ones on USB, or
 battlepod's 3.0 pod. On `hello` the shim sends every lamp as it stands, so a
 bridge started mid-mission lights its keys at once.
 
+**The MFD pictures, to modules.** With `[stream] enable = 1` the shim also
+serves the five MFD pictures, exactly as the game drew them, on a local TCP
+port (9110); the same bridge takes them to modules with a screen - the
+ESP32-S3 MFDs to come, or `tools/mfdrecv.py --all` in five windows today:
+
+```
+shim.ini:   [stream]
+            enable=1
+python tools/bridge.py --game firestorm
+python tools/mfdrecv.py --all
+```
+
+Off by default, and then it costs nothing; the MFD windows are drawn as
+before either way. The protocol is
+[docs/MFD_STREAMING_PROTOCOL.md](../docs/MFD_STREAMING_PROTOCOL.md), the
+measurements [docs/MFD_STREAMING_IMPLEMENTATION.md](../docs/MFD_STREAMING_IMPLEMENTATION.md).
+
 ## Resolution
 
 The main view's size is `options.ini`'s `screenwidth`/`screenheight` (and
@@ -257,6 +275,12 @@ Optional, beside the game. A section can be specialised by role -
 | `shim` | `private_ctcl` | console only | keep this copy's CTCL state to itself |
 | `shim` | `real_adapters` | 0 | also offer the real monitors as adapters |
 | `shim` | `snapshots` | 1 | write `snap-*.bmp`: at frames 120 and 1200, and whenever a file named `snap` appears in the game directory |
+| `stream` | `enable` | 0 | serve the MFD pictures to `tools/bridge.py` ([MFD streaming](../docs/MFD_STREAMING_PROTOCOL.md)) |
+| `stream` | `port` | 9110 | its TCP port, on 127.0.0.1 |
+| `stream` | `displays` | `1,2,3,4,5` | which MFDs (numbered as `[mfd] tiles` and the windows) |
+| `stream` | `tile` | 16 | the size of the squares compared for changes |
+| `stream` | `max_fps` | 0 | at most this many updates a second per display; 0: every frame the game draws |
+| `stream` | `stats` | 0 | log each display's rates, sizes and coding time every 10 s |
 
 ## Status
 

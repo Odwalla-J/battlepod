@@ -163,7 +163,7 @@ hot-plugged serial link needs.
 | module | `KEY` | index, down or up, module time in ms |
 | module | `PONG` | module time |
 | module | `ERROR` | code, text |
-| host | `FRAME` | *reserved*: a rectangle of pixels, for later games |
+| host | `FRAME` | a rectangle of pixels, for later games - now Firestorm's MFDs ([MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md)) |
 
 Keys and LEDs are physical indices. Which logical control an index is lives
 only in the bridge's layout, so the firmware never changes when the binding

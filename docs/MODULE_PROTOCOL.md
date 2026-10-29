@@ -37,17 +37,19 @@ The CRC's check value is `CRC("123456789") = 0x29B1`.
 | type | name | from | payload |
 |---|---|---|---|
 | `0x01` | `HELLO?` | host | protocol version (u8) |
-| `0x02` | `HELLO` | module | version (u8), class (str), unique id (str), firmware (str), keys (u8), LED channels (u8), PWM bits per LED (u8), screen width (u16), height (u16), screen kind (u8: 0 none, 1 monochrome, 2 colour) |
+| `0x02` | `HELLO` | module | version (u8), class (str), unique id (str), firmware (str), keys (u8), LED channels (u8), PWM bits per LED (u8), screen width (u16), height (u16), screen kind (u8: 0 none, 1 monochrome, 2 colour, 3 8-bit grey framebuffer); a framebuffer module adds capabilities (u8) and its largest FRAME body (u16) - [MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md) |
 | `0x10` | `LED` | host | channel (u8), level (u8, 0-255) |
 | `0x11` | `LEDS` | host | first channel (u8), levels (u8 each) |
 | `0x12` | `TEXT` | host | field (u8), x (u16), y (u16), size (u8), attribute (u8), the text (UTF-8, the rest of the payload) |
 | `0x13` | `BAR` | host | field (u8), x, y, w, h (u16 each), value (u16), maximum (u16) |
 | `0x14` | `CLEAR` | host | - |
 | `0x15` | `PING` | host | - |
-| `0x16` | `FRAME` | host | *reserved*: a rectangle of pixels, for games whose displays are pictures |
+| `0x16` | `FRAME` | host | part of a picture: changed rectangles of a display, for games whose displays are pictures - [MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md) |
 | `0x20` | `KEY` | module | index (u8, from 1), down (u8: 1 down, 0 up), module time in ms (u32) |
 | `0x21` | `PONG` | module | module time in ms (u32) |
 | `0x22` | `ERROR` | module | code (u8), text (the rest) |
+| `0x23` | `SYNC` | module | display (u8), reason (u8), frame (u32): send me a whole frame |
+| `0x24` | `FRAME_ACK` | module | display (u8), frame (u32), decode µs (u32): this frame is on the screen |
 
 **Keys and LEDs are physical indices.** Key 1 is the module's first key and
 LED channel 0 its first LED; on an MFD, keys 1-4 sit above the screen left
@@ -83,6 +85,11 @@ The host keeps the authoritative state of everything; a module is a
 stateless mirror of it. So when a module comes back - replugged, rebooted,
 its window reopened - the host replays everything after its `HELLO`, and
 nothing in the game notices it was gone.
+
+A module with a framebuffer that the layout gives a display (`display N`)
+then gets that display's pictures: a whole frame first, then the changed
+parts ([MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md)). The bridge
+sends lamps and text ahead of pictures, so a lamp never waits behind one.
 
 A module that hears nothing from the host for **two seconds** shows
 `NO LINK` and dims its keys. A host that hears nothing from a module for five

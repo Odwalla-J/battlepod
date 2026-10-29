@@ -31,6 +31,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <ctype.h>
+#include "mfdstream.h"
 
 static HMODULE g_real;
 static FILE *g_log;
@@ -576,6 +577,309 @@ static void mfd_present(struct dev *d)
 	}
 }
 
+/* ------------------------------------------------ streaming the MFDs
+ *
+ * [stream] enable = 1 serves the MFD pictures on a local TCP port ([stream]
+ * port, default 9110) for tools/bridge.py to take to hardware modules -
+ * docs/MFD_STREAMING_PROTOCOL.md. Off by default, when all it costs is one
+ * test a frame; the windows are drawn as before either way. The game's
+ * thread only copies the finished MFD surface (a fraction of a millisecond,
+ * and only while someone is taking the stream) and wakes the streaming
+ * thread, which takes each display's channel, compares it with what it last
+ * sent, and codes and sends the changed 16x16 tiles (mfdstream.c). If it
+ * falls behind it skips to the newest frame: the game never waits for it.
+ * Display n is the nth of [mfd] tiles - the window "MFD n". [stream]
+ * displays = 1,2,3,4,5 picks which; tile = 16; stats = 1 logs the rates
+ * every 10 s. */
+#define ST_MAX MFD_TILES
+static double ms_since(LARGE_INTEGER *t);
+static struct {
+	int on;				/* -1: not read yet */
+	CRITICAL_SECTION cs;
+	HANDLE wake;
+	uint32_t *stage, *spare;	/* the newest MFD surface, and the one the thread works from */
+	DWORD w, h;
+	int fresh;
+	uint32_t t_us;
+	volatile LONG client;		/* someone is taking the stream */
+	int n;
+	struct { int head, chan, on, want_key; } d[ST_MAX];
+	double copy_ms, copy_max;	/* the game thread's part, for the statistics */
+	int copies;
+} g_st = { -1 };
+static SOCKET g_st_cli = INVALID_SOCKET;
+static uint8_t g_st_seq;
+static uint8_t g_st_wire[2 * (MS_HEADER + MS_MAX_BODY) + 16];
+
+static uint32_t qpc_us(void)
+{
+	static LARGE_INTEGER f;
+	LARGE_INTEGER c;
+	if (!f.QuadPart) QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&c);
+	return (uint32_t)((c.QuadPart / f.QuadPart) * 1000000 + (c.QuadPart % f.QuadPart) * 1000000 / f.QuadPart);
+}
+
+static void st_drop(const char *why)
+{
+	if (g_st_cli == INVALID_SOCKET) return;
+	InterlockedExchange(&g_st.client, 0);
+	closesocket(g_st_cli);
+	g_st_cli = INVALID_SOCKET;
+	say("MFD stream: the client went (%s)", why);
+}
+
+static void st_send(uint8_t type, const uint8_t *payload, int len)
+{
+	int n = mp_pack(type, ++g_st_seq, payload, len, g_st_wire), at = 0;
+
+	while (g_st_cli != INVALID_SOCKET && at < n) {
+		int k = send(g_st_cli, (const char *)g_st_wire + at, n - at, 0);
+		if (k <= 0) { st_drop("send failed"); return; }
+		at += k;
+	}
+}
+
+static void st_emit(void *ctx, const uint8_t *payload, int len)
+{
+	st_send(MP_FRAME, payload, len);
+}
+
+static void st_hello(int w, int h)
+{
+	uint8_t p[96];
+	const char *cls = "mfd-source", *fw = "firestorm-shim";
+	char uid[48];
+	int n = 0, k;
+
+	snprintf(uid, sizeof uid, "firestorm-%s%s", g_tag[0] ? g_tag : "", g_cockpit ? "pod" : "console");
+	p[n++] = 0;					/* module protocol version */
+	k = (int)strlen(cls); p[n++] = (uint8_t)k; memcpy(p + n, cls, k); n += k;
+	k = (int)strlen(uid); p[n++] = (uint8_t)k; memcpy(p + n, uid, k); n += k;
+	k = (int)strlen(fw); p[n++] = (uint8_t)k; memcpy(p + n, fw, k); n += k;
+	p[n++] = 0; p[n++] = 0; p[n++] = 0;		/* no keys, no lamps */
+	p[n++] = (uint8_t)(w >> 8); p[n++] = (uint8_t)w;
+	p[n++] = (uint8_t)(h >> 8); p[n++] = (uint8_t)h;
+	p[n++] = 3;					/* 8-bit grey */
+	st_send(MP_HELLO, p, n);
+}
+
+/* What the bridge says: HELLO? and SYNC (a whole frame for a display). */
+static int st_read(uint8_t *buf, int *have, int cap)
+{
+	u_long avail = 0;
+	uint8_t msg[64];
+	int k, z;
+
+	if (ioctlsocket(g_st_cli, FIONREAD, &avail) || !avail) return 0;
+	k = recv(g_st_cli, (char *)buf + *have, cap - *have, 0);
+	if (k <= 0) { st_drop("closed"); return -1; }
+	*have += k;
+	for (;;) {
+		for (z = 0; z < *have && buf[z]; z++)
+			;
+		if (z == *have) {
+			if (*have == cap) *have = 0;	/* nothing that long is ours */
+			return 0;
+		}
+		k = z ? mp_unpack(buf, z, msg, sizeof msg) : -1;
+		if (k >= 2 && msg[0] == MP_HELLO_Q)
+			st_hello(g_st.w / 2, g_st.h);
+		else if (k >= 3 && msg[0] == MP_SYNC && msg[2] >= 1 && msg[2] <= g_st.n)
+			g_st.d[msg[2] - 1].want_key = 1;
+		memmove(buf, buf + z + 1, *have - z - 1);
+		*have -= z + 1;
+	}
+}
+
+static DWORD WINAPI stream_main(LPVOID p)
+{
+	static struct ms_enc enc[ST_MAX];
+	static uint8_t rx[512];
+	int port = cfg_int("stream", "port", 9110), tile = cfg_int("stream", "tile", 16);
+	int stats = cfg_int("stream", "stats", 0), max_fps = cfg_int("stream", "max_fps", 0);
+	int i, rxn = 0;
+	uint8_t *grey = NULL;
+	uint32_t stream_id = 0, last_us = 0;
+	SOCKET lis;
+	struct sockaddr_in a;
+	WSADATA wsa;
+	LARGE_INTEGER t_stat;
+	double enc_ms[ST_MAX] = { 0 }, enc_max[ST_MAX] = { 0 };
+	int enc_n[ST_MAX] = { 0 };
+
+	WSAStartup(MAKEWORD(2, 2), &wsa);
+	lis = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	memset(&a, 0, sizeof a);
+	a.sin_family = AF_INET;
+	a.sin_port = htons((u_short)port);
+	a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (lis == INVALID_SOCKET || bind(lis, (struct sockaddr *)&a, sizeof a) || listen(lis, 1)) {
+		say("MFD stream: port %d is taken; not streaming", port);
+		return 0;
+	}
+	say("MFD stream: tcp://127.0.0.1:%d, %d display(s), %dx%d tiles", port, g_st.n, tile, tile);
+	QueryPerformanceCounter(&t_stat);
+	for (;;) {
+		int have_frame = 0;
+		uint32_t t_us = 0;
+
+		if (g_st_cli == INVALID_SOCKET) {
+			/* Small: when the bridge cannot keep up, frames are skipped here
+			 * (the newest wins) rather than queued, so the delay stays short. */
+			int one = 1, buf = 256 * 1024;
+			SOCKET c = accept(lis, NULL, NULL);
+			if (c == INVALID_SOCKET) { Sleep(100); continue; }
+			setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof one);
+			setsockopt(c, SOL_SOCKET, SO_SNDBUF, (const char *)&buf, sizeof buf);
+			/* A new stream for each client: its first update is a whole frame. */
+			stream_id = stream_id * 2654435761u + GetTickCount() + (GetCurrentProcessId() << 16) + 1;
+			for (i = 0; i < g_st.n; i++) {
+				ms_free(&enc[i]);
+				ms_init(&enc[i], i + 1, 0, 0, tile, stream_id);
+				g_st.d[i].want_key = 0;
+			}
+			g_st_cli = c;
+			rxn = 0;
+			InterlockedExchange(&g_st.client, 1);
+			say("MFD stream: a client; stream %08lX", (unsigned long)stream_id);
+			continue;
+		}
+		WaitForSingleObject(g_st.wake, 50);
+		if (st_read(rx, &rxn, sizeof rx) < 0) continue;
+
+		EnterCriticalSection(&g_st.cs);
+		if (g_st.fresh && (!max_fps || (uint32_t)(g_st.t_us - last_us) >= 1000000u / max_fps)) {
+			uint32_t *s = g_st.stage;
+			g_st.stage = g_st.spare;		/* the game copies into the other one next */
+			g_st.spare = s;
+			g_st.fresh = 0;
+			t_us = last_us = g_st.t_us;
+			have_frame = 1;
+		}
+		LeaveCriticalSection(&g_st.cs);
+
+		if (have_frame) {
+			int half = (int)g_st.w / 2, hh = (int)g_st.h, x, y;
+			if (!grey) grey = malloc((size_t)half * hh);
+			for (i = 0; i < g_st.n && grey && g_st_cli != INVALID_SOCKET; i++) {
+				int shift = 16 - 8 * g_st.d[i].chan;
+				LARGE_INTEGER t0;
+				double ms;
+				if (!g_st.d[i].on) continue;
+				if (enc[i].w != half || enc[i].h != hh) {
+					ms_free(&enc[i]);
+					ms_init(&enc[i], i + 1, half, hh, tile, stream_id);
+				}
+				QueryPerformanceCounter(&t0);
+				for (y = 0; y < hh; y++) {
+					const uint32_t *src = g_st.spare + y * g_st.w + g_st.d[i].head * half;
+					uint8_t *o = grey + y * half;
+					for (x = 0; x < half; x++) o[x] = (uint8_t)(src[x] >> shift);
+				}
+				ms_update(&enc[i], grey, t_us, st_emit, NULL);
+				ms = ms_since(&t0);
+				enc_n[i]++;
+				enc_ms[i] += ms;
+				if (ms > enc_max[i]) enc_max[i] = ms;
+			}
+		}
+		for (i = 0; i < g_st.n && g_st_cli != INVALID_SOCKET; i++)
+			if (g_st.d[i].want_key) {
+				g_st.d[i].want_key = 0;
+				ms_key(&enc[i], qpc_us(), st_emit, NULL);
+			}
+		if (stats) {
+			LARGE_INTEGER now, f;
+			QueryPerformanceCounter(&now);
+			QueryPerformanceFrequency(&f);
+			if (now.QuadPart - t_stat.QuadPart >= f.QuadPart * 10) {
+				double el = (double)(now.QuadPart - t_stat.QuadPart) / f.QuadPart;
+				for (i = 0; i < g_st.n; i++) {
+					struct ms_enc *e = &enc[i];
+					if (!g_st.d[i].on) continue;
+					say("MFD stream: display %d: %.1f updates/s, %u whole, %.1f KB/s, %.0f B/update;"
+					    " coding %.2f ms a frame (worst %.2f)", i + 1, e->updates / el, e->keys,
+					    e->bytes / el / 1024, e->updates ? (double)e->bytes / (e->updates + e->keys) : 0.0,
+					    enc_n[i] ? enc_ms[i] / enc_n[i] : 0.0, enc_max[i]);
+					e->updates = e->keys = e->parts = e->bytes = e->rects = 0;
+					enc_ms[i] = enc_max[i] = 0;
+					enc_n[i] = 0;
+				}
+				EnterCriticalSection(&g_st.cs);
+				say("MFD stream: the game's copy %.3f ms a frame (worst %.3f)",
+				    g_st.copies ? g_st.copy_ms / g_st.copies : 0.0, g_st.copy_max);
+				g_st.copy_ms = g_st.copy_max = 0;
+				g_st.copies = 0;
+				LeaveCriticalSection(&g_st.cs);
+				t_stat = now;
+			}
+		}
+	}
+	return 0;
+}
+
+static void stream_start(void)
+{
+	char buf[256], *t;
+	int n = 0;
+
+	g_st.on = cfg_int("stream", "enable", 0);
+	if (!g_st.on) return;
+	/* The displays: [mfd] tiles, as the windows read it. */
+	cfg_str("mfd", "tiles", "L:R,L:G,L:B,R:R,R:G", buf, sizeof buf);
+	for (t = strtok(buf, ", "); t && n < ST_MAX; t = strtok(NULL, ", ")) {
+		if (strlen(t) < 3) continue;
+		g_st.d[n].head = (t[0] == 'R' || t[0] == 'r');
+		g_st.d[n].chan = strchr("RrGgBb", t[2]) ? (int)(strchr("RGB", toupper(t[2])) - "RGB") : 3;
+		n++;
+	}
+	g_st.n = n;
+	cfg_str("stream", "displays", "1,2,3,4,5,6", buf, sizeof buf);
+	for (t = strtok(buf, ", "); t; t = strtok(NULL, ", ")) {
+		int k = atoi(t);
+		if (k >= 1 && k <= n) g_st.d[k - 1].on = g_st.d[k - 1].chan != 3;	/* not a head in colour */
+	}
+	InitializeCriticalSection(&g_st.cs);
+	g_st.wake = CreateEventA(NULL, FALSE, FALSE, NULL);
+	CreateThread(NULL, 0, stream_main, NULL, 0, NULL);
+}
+
+/* The game's thread: the finished MFD surface, for the streaming thread. */
+static void stream_offer(struct dev *d)
+{
+	LARGE_INTEGER t;
+
+	if (g_st.on < 0) stream_start();
+	if (!g_st.on || !g_st.client || !d->rgb) return;
+	ms_since(&t);
+	EnterCriticalSection(&g_st.cs);
+	if (!g_st.stage) {
+		g_st.stage = malloc((size_t)d->w * d->h * 4);
+		g_st.spare = malloc((size_t)d->w * d->h * 4);
+		g_st.w = d->w;
+		g_st.h = d->h;
+	} else if (g_st.w != d->w || g_st.h != d->h) {
+		/* The thread may be reading the other buffer: never freed under it.
+		 * The MFD surface is 1280x480 for good, so this does not happen. */
+		say("MFD stream: the MFD surface changed size; not streaming");
+		g_st.on = 0;
+	}
+	if (g_st.on && g_st.stage && g_st.spare) {
+		memcpy(g_st.stage, d->rgb, (size_t)d->w * d->h * 4);
+		g_st.fresh = 1;
+		g_st.t_us = qpc_us();
+	}
+	{
+		double ms = ms_since(&t);
+		g_st.copy_ms += ms;
+		if (ms > g_st.copy_max) g_st.copy_max = ms;
+		g_st.copies++;
+	}
+	LeaveCriticalSection(&g_st.cs);
+	SetEvent(g_st.wake);
+}
+
 /* ------------------------------------------------ presenting a frame */
 
 static void write_bmp(const char *path, const uint32_t *px, int w, int h)
@@ -884,8 +1188,10 @@ static void present(struct dev *d)
 	if (d->frames == 1)
 		say("%s%d: first frame, %lux%lu", KIND[d->kind], d->serial, d->w, d->h);
 
-	if (d->kind == K_MFD) mfd_present(d);
-	else if (d->kind == K_MAIN) draw_view(d->hwnd, d->rgb, d->w, d->h);
+	if (d->kind == K_MFD) {
+		mfd_present(d);
+		stream_offer(d);
+	} else if (d->kind == K_MAIN) draw_view(d->hwnd, d->rgb, d->w, d->h);
 	else if (d->kind == K_RADAR && radar_rotation()) radar_present(d);
 	else draw_rgb(d->hwnd, d->rgb, d->w, d->h, 0, 0, d->w, d->h);
 	g_t_draw[d->kind != K_MAIN] += ms_since(&t);

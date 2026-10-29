@@ -8,6 +8,7 @@ bytes on a USB serial link and on the TCP socket a virtual module uses.
 Imported by tools/bridge.py and tools/vmfd.py; `modproto.py --selftest`
 checks the encoding against fixed vectors. Standard library only.
 """
+import binascii
 import struct
 import sys
 
@@ -21,60 +22,54 @@ TEXT = 0x12
 BAR = 0x13
 CLEAR = 0x14
 PING = 0x15
-FRAME = 0x16        # reserved
+FRAME = 0x16        # part of a picture: docs/MFD_STREAMING_PROTOCOL.md (tools/mfdstream.py)
 # module -> host
 HELLO = 0x02
 KEY = 0x20
 PONG = 0x21
 ERROR = 0x22
+SYNC = 0x23         # send me a whole frame
+FRAME_ACK = 0x24    # I have shown this frame
 
 NAMES = {HELLO_Q: "HELLO?", HELLO: "HELLO", LED: "LED", LEDS: "LEDS", TEXT: "TEXT",
          BAR: "BAR", CLEAR: "CLEAR", PING: "PING", FRAME: "FRAME", KEY: "KEY",
-         PONG: "PONG", ERROR: "ERROR"}
+         PONG: "PONG", ERROR: "ERROR", SYNC: "SYNC", FRAME_ACK: "FRAME_ACK"}
 
-SCREEN_NONE, SCREEN_MONO, SCREEN_COLOUR = 0, 1, 2
+SCREEN_NONE, SCREEN_MONO, SCREEN_COLOUR, SCREEN_GREY = 0, 1, 2, 3
 
 
 def crc16(data, crc=0xFFFF):
-    """CRC-16/CCITT-FALSE: polynomial 0x1021, initial 0xFFFF, no reflection."""
-    for b in data:
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
-            crc &= 0xFFFF
-    return crc
+    """CRC-16/CCITT-FALSE: polynomial 0x1021, initial 0xFFFF, no reflection
+    (binascii's crc_hqx is that CRC, in C - frames are kilobytes)."""
+    return binascii.crc_hqx(data, crc)
 
 
 def cobs_encode(data):
-    out, block = bytearray(), bytearray()
-    for b in data:
-        if b == 0:
-            out.append(len(block) + 1)
-            out += block
-            block.clear()
-        else:
-            block.append(b)
-            if len(block) == 254:
-                out.append(255)
-                out += block
-                block.clear()
-    out.append(len(block) + 1)
-    out += block
+    """Each zero-free run, in blocks of at most 254, behind its length + 1."""
+    out = bytearray()
+    runs = bytes(data).split(b"\x00")
+    for run in runs:
+        while len(run) >= 254:
+            out.append(255)
+            out += run[:254]
+            run = run[254:]
+        out.append(len(run) + 1)
+        out += run
     return bytes(out)
 
 
 def cobs_decode(data):
-    out, i = bytearray(), 0
-    while i < len(data):
+    out, i, n = bytearray(), 0, len(data)
+    while i < n:
         code = data[i]
         if code == 0:
             raise ValueError("zero inside a COBS packet")
         i += 1
-        if i + code - 1 > len(data):
+        if i + code - 1 > n:
             raise ValueError("COBS block runs off the end")
         out += data[i:i + code - 1]
         i += code - 1
-        if code < 255 and i < len(data):
+        if code < 255 and i < n:
             out.append(0)
     return bytes(out)
 
@@ -138,9 +133,10 @@ def hello_q():
     return bytes([VERSION])
 
 
-def hello(cls, uid, firmware, keys, leds, levels, width, height, kind):
+def hello(cls, uid, firmware, keys, leds, levels, width, height, kind, caps=None, max_body=0):
     return (bytes([VERSION]) + _str(cls) + _str(uid) + _str(firmware) +
-            struct.pack(">BBBHHB", keys, leds, levels, width, height, kind))
+            struct.pack(">BBBHHB", keys, leds, levels, width, height, kind) +
+            (struct.pack(">BH", caps, max_body) if caps is not None else b""))
 
 
 def parse_hello(p):
@@ -148,9 +144,12 @@ def parse_hello(p):
     cls, at = _take_str(p, 1)
     uid, at = _take_str(p, at)
     fw, at = _take_str(p, at)
-    keys, leds, levels, w, h, kind = struct.unpack(">BBBHHB", p[at:at + 9])
+    keys, leds, levels, w, h, kind = struct.unpack(">BBBHHB", p[at:at + 8])
+    # A framebuffer module adds its capabilities and the largest FRAME body
+    # it takes (docs/MFD_STREAMING_PROTOCOL.md); older modules end here.
+    caps, max_body = struct.unpack(">BH", p[at + 8:at + 11]) if len(p) >= at + 11 else (0, 0)
     return dict(version=ver, cls=cls, uid=uid, firmware=fw, keys=keys, leds=leds,
-                levels=levels, width=w, height=h, kind=kind)
+                levels=levels, width=w, height=h, kind=kind, caps=caps, max_body=max_body)
 
 
 def led(channel, level):
@@ -207,7 +206,44 @@ def selftest():
     assert parse_text(got[1][2]) == (1, 8, 100, 2, 0, "MAP DISPLAY")
     assert parse_key(got[2][2]) == (2, True, 123456)
     h = parse_hello(hello("mfd", "vmfd-C", "vmfd 0", 8, 8, 4, 320, 240, SCREEN_COLOUR))
-    assert h["uid"] == "vmfd-C" and h["keys"] == 8 and h["width"] == 320
+    assert h["uid"] == "vmfd-C" and h["keys"] == 8 and h["width"] == 320 and h["caps"] == 0
+    h = parse_hello(hello("mfd", "mfd-3", "x", 8, 8, 8, 640, 480, SCREEN_GREY, 1, 4096))
+    assert h["kind"] == SCREEN_GREY and h["caps"] == 1 and h["max_body"] == 4096
+    # The fast CRC and COBS against the plain loops they replaced.
+    import random
+    rnd = random.Random(5)
+
+    def crc_ref(data, crc=0xFFFF):
+        for b in data:
+            crc ^= b << 8
+            for _ in range(8):
+                crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
+                crc &= 0xFFFF
+        return crc
+
+    def cobs_ref(data):
+        out, block = bytearray(), bytearray()
+        for b in data:
+            if b == 0:
+                out.append(len(block) + 1)
+                out += block
+                block.clear()
+            else:
+                block.append(b)
+                if len(block) == 254:
+                    out.append(255)
+                    out += block
+                    block.clear()
+        out.append(len(block) + 1)
+        out += block
+        return bytes(out)
+
+    for n in list(range(0, 600)) + [5000]:
+        for zeros in (0, 0.01, 0.5):
+            d = bytes(0 if rnd.random() < zeros else rnd.randrange(1, 256) for _ in range(n))
+            assert cobs_encode(d) == cobs_ref(d), (n, zeros)
+            assert cobs_decode(cobs_encode(d)) == d
+            assert crc16(d) == crc_ref(d)
     # A flipped bit is caught.
     bad = bytearray(msgs[0])
     bad[2] ^= 0x01
