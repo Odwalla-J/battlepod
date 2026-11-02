@@ -45,6 +45,7 @@ The CRC's check value is `CRC("123456789") = 0x29B1`.
 | `0x14` | `CLEAR` | host | - |
 | `0x15` | `PING` | host | - |
 | `0x16` | `FRAME` | host | part of a picture: changed rectangles of a display, for games whose displays are pictures - [MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md) |
+| `0x17` | `NAME` | host | the unique id to keep from now on (UTF-8, the rest of the payload, at most 32 bytes): a module that can keep one stores it and answers with a new `HELLO`; one that cannot ignores it |
 | `0x20` | `KEY` | module | index (u8, from 1), down (u8: 1 down, 0 up), module time in ms (u32) |
 | `0x21` | `PONG` | module | module time in ms (u32) |
 | `0x22` | `ERROR` | module | code (u8), text (the rest) |
@@ -97,6 +98,12 @@ drops it.
 
 ## Identity
 
+A module whose place in the cockpit is set when it is fitted - an MFD board,
+which is MFD 1 to 5 by where it is mounted - can be told its name with
+`NAME` and keeps it (`firestorm/firmware/esp32-mfd`: `mfd:1`-`mfd:5`, from the
+launcher's *MFD boards* page). The name is then the layout's module name, and
+the board can move between PCs and ports.
+
 The layout refers to a module by its **unique id** - for an RP2040 its flash
 unique id, also its USB serial string - or a name the builder gives it,
 never by COM port, which Windows reassigns. `vmfd.py --uid` sets a virtual
@@ -108,7 +115,7 @@ one's.
 |---|---|---|
 | who | a real module | `tools/vmfd.py`, and anything else in software |
 | where | any port; `bridge.py --serial COM5` (pyserial) | the module connects to the bridge, `127.0.0.1:5181` by default |
-| speed | line settings are ignored by CDC; 115200 is opened | - |
+| speed | line settings are ignored by CDC; 115200 is opened. Behind a USB-serial chip (a CH340) the speed is real: `--serial COM8@2000000`; DTR and RTS are kept released, as on ESP32 boards they reset it | - |
 
 ## Versions
 

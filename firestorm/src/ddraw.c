@@ -31,6 +31,8 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <math.h>
+#include <mmsystem.h>
 #include "mfdstream.h"
 
 static HMODULE g_real;
@@ -213,6 +215,9 @@ struct dev {
 	LPDIRECTDRAWSURFACE7 screen;	/* the real primary, for [main] gpu_present */
 	LPDIRECTDRAWCLIPPER clip;
 };
+/* The main view's own size, when options.ini asks for one the game does not
+ * know (main_mode); 0 otherwise. */
+static DWORD g_main_w, g_main_h;
 #define MAX_DEVS 16
 static struct dev g_dev[MAX_DEVS];
 static int g_serial[4];
@@ -915,7 +920,12 @@ static int snap_due(struct dev *d, unsigned n)
 			g_snapreq = GetTickCount();
 		}
 	}
-	return n == 120 || n == 1200 || (g_snapreq && d->snapped != g_snapreq);
+	/* Asked for (the control port's "snap", a file named snap) always; at
+	 * frames 120 and 1200 only with [shim] snapshots = 1 - several MB of
+	 * pictures a run otherwise. */
+	static int every_run = -1;
+	if (every_run < 0) every_run = cfg_int("shim", "snapshots", 0);
+	return (every_run && (n == 120 || n == 1200)) || (g_snapreq && d->snapped != g_snapreq);
 }
 
 static void snapshot(struct dev *d)
@@ -924,7 +934,6 @@ static void snapshot(struct dev *d)
 
 	if (!snap_due(d, d->frames)) return;
 	d->snapped = g_snapreq;
-	if (!cfg_int("shim", "snapshots", 1)) return;
 	snprintf(path, sizeof path, "%ssnap-%s%s%d-%05u.bmp", g_dir, g_tag, KIND[d->kind], d->serial, d->frames);
 	write_bmp(path, d->rgb, d->w, d->h);
 	say("snapshot %s", path);
@@ -1395,8 +1404,28 @@ static HRESULT WINAPI h_EnumDisplayModes(void *dd, DWORD flags, LPDDSURFACEDESC2
 	struct dev *d = dev_of(dd);
 	int i, b;
 
-	if (!d || (d->kind != K_MFD && d->kind != K_RADAR))
-		return ((EnumModes_t)DD_ORIG(dd, DD_EnumDisplayModes))(dd, flags, match, ctx, cb);
+	if (!d || (d->kind != K_MFD && d->kind != K_RADAR)) {
+		/* The main view's own size (main_mode), which the card need not
+		 * have: the main view is a window anyway. */
+		HRESULT hr = ((EnumModes_t)DD_ORIG(dd, DD_EnumDisplayModes))(dd, flags, match, ctx, cb);
+		for (b = 0; g_main_w && b < 2 && SUCCEEDED(hr); b++) {
+			DDSURFACEDESC2 sd;
+			DWORD bpp = b ? 32 : 16;
+			if (match && (match->dwFlags & DDSD_WIDTH) && match->dwWidth != g_main_w) continue;
+			if (match && (match->dwFlags & DDSD_HEIGHT) && match->dwHeight != g_main_h) continue;
+			if (match && (match->dwFlags & DDSD_PIXELFORMAT) && match->ddpfPixelFormat.dwRGBBitCount != bpp) continue;
+			memset(&sd, 0, sizeof sd);
+			sd.dwSize = sizeof sd;
+			sd.dwFlags = DDSD_WIDTH | DDSD_HEIGHT | DDSD_PITCH | DDSD_PIXELFORMAT | DDSD_REFRESHRATE;
+			sd.dwWidth = g_main_w;
+			sd.dwHeight = g_main_h;
+			sd.lPitch = g_main_w * bpp / 8;
+			sd.dwRefreshRate = 60;
+			pixfmt(&sd.ddpfPixelFormat, bpp);
+			if (cb(&sd, ctx) == DDENUMRET_CANCEL) break;
+		}
+		return hr;
+	}
 	for (b = 0; b < 2; b++)
 		for (i = 0; i < (int)(sizeof VMODES / sizeof VMODES[0]); i++) {
 			DDSURFACEDESC2 sd;
@@ -1746,10 +1775,32 @@ HRESULT WINAPI sh_DirectDrawEnumerateA(LPDDENUMCALLBACKA cb, LPVOID ctx)
  * becomes mw4files beside the game. */
 static char g_ctcl[MAX_PATH], g_files[MAX_PATH];
 
+/* Each copy's own options.ini. MW4 rewrites options.ini as it starts, with
+ * only the sections that copy keeps: a pod drops [graphics options] - its
+ * screen size - and a console drops the pod's sections; on one PC they share
+ * the file. The arcade never saw it: postinstall.bat copied options-game.ini
+ * (or -cam, -mr) over options.ini on each pod. So, the same way, each copy
+ * reads and rewrites a copy of its own, mw4files\<role>\options.ini, made
+ * afresh from options.ini - the file the launcher edits - as it starts. */
+static char g_opts[MAX_PATH];
+
+static int is_options_ini(const char *p)
+{
+	const char *base = strrchr(p, '\\');
+	size_t n;
+	if (strrchr(p, '/') > base) base = strrchr(p, '/');
+	if (!base) return !_stricmp(p, "options.ini");
+	if (_stricmp(base + 1, "options.ini")) return 0;
+	if (base == p + 1 && p[0] == '.') return 1;		/* .\options.ini */
+	n = strlen(g_dir);					/* g_dir ends in a backslash */
+	return (size_t)(base + 1 - p) == n && !_strnicmp(p, g_dir, n);
+}
+
 static const char *redir_buf(const char *p, char *buf)
 {
 	if (!p || (ULONG_PTR)p < 0x10000) return p;
 	if (!_stricmp(p, "c:\\ctcl.ini")) return g_ctcl;
+	if (g_opts[0] && is_options_ini(p)) return g_opts;
 	if (!_strnicmp(p, "c:\\mw4files", 11) && (p[11] == 0 || p[11] == '\\' || p[11] == '/')) {
 		snprintf(buf, MAX_PATH, "%s%s", g_files, p + 11);
 		return buf;
@@ -2256,6 +2307,7 @@ static void client_box(struct dev *d, RECT *b)
  * console's slots (below) and the control port's "click". */
 static volatile LONG g_fake_on, g_fake_down;
 static POINT g_fake_at;
+static void ms_button(int down);
 
 static BOOL WINAPI i_GetCursorPos(LPPOINT p)
 {
@@ -2339,6 +2391,7 @@ static void fake_click(int x, int y)
 	LPARAM lp;
 
 	if (!d) return;
+	say("click %d,%d (the game's window %s)", x, y, GetForegroundWindow() == d->hwnd ? "in front" : "behind");
 	client_box(d, &b);
 	lp = MAKELPARAM(b.left + x * (b.right - b.left) / (LONG)d->w, b.top + y * (b.bottom - b.top) / (LONG)d->h);
 	g_fake_at.x = x;
@@ -2347,9 +2400,11 @@ static void fake_click(int x, int y)
 	PostMessageA(d->hwnd, WM_MOUSEMOVE, 0, lp);
 	Sleep(150);
 	InterlockedExchange(&g_fake_down, 1);
+	ms_button(1);
 	PostMessageA(d->hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lp);
 	Sleep(150);
 	InterlockedExchange(&g_fake_down, 0);
+	ms_button(0);
 	PostMessageA(d->hwnd, WM_LBUTTONUP, 0, lp);
 	Sleep(150);
 }
@@ -2393,6 +2448,409 @@ static void fake_enter(void)
 	PostMessageA(d->hwnd, WM_CHAR, '\r', 0x001C0001);
 	PostMessageA(d->hwnd, WM_KEYUP, VK_RETURN, 0xC01C0001);
 	Sleep(150);
+}
+
+/* A main view of any shape. options.ini's screenwidth/screenheight reach
+ * the game (0x4FBB2D), but at LAUNCH the mission's size is made again from
+ * the options loader's index of five (0x556965: 1600x1200, 1280x1024,
+ * 1024x768, 800x600, 640x480) - any width but those five lands on 800x600
+ * (a watchpoint found the write at 0x5569B1). So for a size of its own the
+ * shim rewrites, in memory and only if the bytes are this build's, all five
+ * cases to it: whichever the index, the mission gets that size. MW4.exe on
+ * disk is not touched. docs/WIDESCREEN.md. */
+
+static void main_mode(void)
+{
+	static const DWORD cases[5] = { 0x556965, 0x55697B, 0x556991, 0x5569A7, 0x5569BD };
+	static const int known[] = { 512, 640, 800, 1024, 1280, 1600 };
+	char opts[MAX_PATH];
+	int w, h, i;
+	DWORD old;
+
+	snprintf(opts, sizeof opts, "%soptions.ini", g_dir);
+	w = (int)GetPrivateProfileIntA("graphics options", "screenwidth", 0, opts);
+	h = (int)GetPrivateProfileIntA("graphics options", "screenheight", 0, opts);
+	if (!w || !h) return;
+	for (i = 0; i < 6; i++)
+		if (w == known[i] && h * 4 == w * 3) return;	/* one of the game's own */
+	if (w < 640 || w > 4096 || h < 480 || h > 4096) {
+		say("main view: %dx%d is out of range; the game will use 800x600", w, h);
+		return;
+	}
+	/* Direct3D 7 here draws to nothing wider than 2048: wider, GameOS finds no
+	 * hardware renderer and stops ("No software rasterizer available"). So a
+	 * larger size is drawn at its shape within [main] max_size and scaled up
+	 * to the window - 2560x1080 as 2048x864. */
+	i = cfg_int("main", "max_size", 2048);
+	if (i >= 640 && (w > i || h > i)) {
+		int sw = w, sh = h;
+		if (w >= h) { h = (h * i + w / 2) / w; w = i; }
+		else { w = (w * i + h / 2) / h; h = i; }
+		say("main view: %dx%d is larger than Direct3D draws (%d); drawn at %dx%d, the same shape, and scaled to the window",
+		    sw, sh, i, w, h);
+	}
+	for (i = 0; i < 5; i++) {		/* mov [7673EC], imm32; mov [7673F0], imm32 */
+		const BYTE *c = (const BYTE *)cases[i];
+		if (IsBadReadPtr(c, 20) || memcmp(c, "\xC7\x05\xEC\x73\x76\x00", 6) ||
+		    memcmp(c + 10, "\xC7\x05\xF0\x73\x76\x00", 6)) {
+			say("main view: this MW4.exe is not the build the shim knows; %dx%d not possible", w, h);
+			return;
+		}
+	}
+	for (i = 0; i < 5; i++) {
+		BYTE *c = (BYTE *)cases[i];
+		VirtualProtect(c, 20, PAGE_EXECUTE_READWRITE, &old);
+		memcpy(c + 6, &w, 4);
+		memcpy(c + 16, &h, 4);
+		VirtualProtect(c, 20, old, &old);
+	}
+	FlushInstructionCache(GetCurrentProcess(), (void *)cases[0], 0x70);
+	g_main_w = (DWORD)w;
+	g_main_h = (DWORD)h;
+	say("main view: %dx%d (the game's five mission sizes all made that, in memory)", w, h);
+}
+
+/* The cockpit's view at a wide size: wider, not stretched (Hor+). MW4
+ * transforms its own vertices (MLR), so the projection is not Direct3D's but
+ * the camera's own: SetPerspective (0x4F2E70: near, far, a field of view
+ * across the view, height/width) makes its frustum. The cockpit's camera is
+ * set up at 4:3 - 60 degrees across, height/width 0.75 - through 0x5146F0
+ * (the call at 0x51470B), and zooming sets it again at 0x57AE81 with the
+ * height/width it reads back; the cockpit frame itself is 3D, drawn by the
+ * same camera. So for a main view of another shape (main_mode) the shim
+ * points those calls here and keeps the 4:3 view's height: height/width the
+ * window's, and the field of view across it as wide as that makes it
+ * (2 atan(tan(fov/2) * 0.75 / (h/w)): 60 degrees becomes 75 at 16:9).
+ * [main] widen = 0 leaves it stretched; widen_mask picks the cameras by who
+ * set them up - 2 the cockpit's (0x5146F0, at 4:3), 1 the MechLab's
+ * (0x60F0E2) - default 2. The 2D HUD is still drawn stretched.
+ * docs/WIDESCREEN.md. */
+typedef void (__fastcall *SetPersp_t)(void *cam, void *edx, float n, float f, const float *fov, float h2w);
+#define SET_PERSPECTIVE 0x4F2E70
+static void *g_wide_cam[8];
+static int g_nwide_cam;
+
+static int wide_cam(void *cam)
+{
+	int i;
+	for (i = 0; i < g_nwide_cam; i++) if (g_wide_cam[i] == cam) return 1;
+	return 0;
+}
+
+static void __fastcall h_SetPerspective(void *cam, void *edx, float n, float f, const float *fov, float h2w)
+{
+	DWORD from = (DWORD)__builtin_return_address(0);
+	float want = (float)g_main_h / (float)g_main_w, nf;
+
+	if (fov && fabsf(h2w - 0.75f) < 0.001f && !wide_cam(cam) && g_nwide_cam < 8) {
+		int mask = cfg_int("main", "widen_mask", 2);
+		if (((mask & 1) && from == 0x60F0E7) || ((mask & 2) && from == 0x514710))
+			g_wide_cam[g_nwide_cam++] = cam;
+	}
+	if (fov && wide_cam(cam) && (fabsf(h2w - 0.75f) < 0.001f || fabsf(h2w - want) < 0.001f)) {
+		nf = 2.0f * atanf(tanf(*fov * 0.5f) * 0.75f / want);
+		say("main view: camera %p widened, %.1f degrees across instead of %.1f", cam,
+		    nf * 57.29578f, *fov * 57.29578f);
+		((SetPersp_t)SET_PERSPECTIVE)(cam, 0, n, f, &nf, want);
+		return;
+	}
+	((SetPersp_t)SET_PERSPECTIVE)(cam, 0, n, f, fov, h2w);
+}
+
+/* Point direct calls (E8 rel32) at a function of the shim's, if every one
+ * is where this build of MW4.exe has it. */
+static int repoint(const DWORD *sites, int n, DWORD target, void *hook)
+{
+	int i;
+	DWORD old;
+
+	for (i = 0; i < n; i++) {
+		BYTE *c = (BYTE *)sites[i];
+		if (IsBadReadPtr(c, 5) || c[0] != 0xE8 || (DWORD)(sites[i] + 5 + *(LONG *)(c + 1)) != target)
+			return 0;
+	}
+	for (i = 0; i < n; i++) {
+		BYTE *c = (BYTE *)sites[i];
+		LONG rel = (LONG)((DWORD)hook - (sites[i] + 5));
+		VirtualProtect(c, 5, PAGE_EXECUTE_READWRITE, &old);
+		memcpy(c + 1, &rel, 4);
+		VirtualProtect(c, 5, old, &old);
+		FlushInstructionCache(GetCurrentProcess(), c, 5);
+	}
+	return 1;
+}
+
+/* Send a function of MW4.exe to one of the shim's, if its first len bytes are
+ * this build's: they move to a trampoline, which goes on with the rest. The
+ * trampoline is the original function to call. */
+static void *detour(DWORD at, const BYTE *expect, int len, void *hook)
+{
+	BYTE *t;
+	DWORD old;
+
+	if (IsBadReadPtr((void *)at, len) || memcmp((void *)at, expect, len)) return NULL;
+	t = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (!t) return NULL;
+	memcpy(t, (void *)at, len);
+	t[len] = 0xE9;
+	*(LONG *)(t + len + 1) = (LONG)(at + len - ((DWORD)t + len + 5));
+	VirtualProtect((void *)at, len, PAGE_EXECUTE_READWRITE, &old);
+	((BYTE *)at)[0] = 0xE9;
+	*(LONG *)(at + 1) = (LONG)((DWORD)hook - (at + 5));
+	VirtualProtect((void *)at, len, old, &old);
+	FlushInstructionCache(GetCurrentProcess(), (void *)at, len);
+	return t;
+}
+
+/* ---- the MFDs' text
+ *
+ * Everything the game writes on its displays goes through one function
+ * (0x423E80: a font, x, y on the 640x480 MFD, a colour, the text, its
+ * alignment - low nibble across, high nibble down - ret 0x14); the soft
+ * keys' labels through another with the same arguments (0x423F40, two
+ * lines at most). Two changes:
+ *
+ * - MFD 1's top keys are labelled "1".."4", and when a lancemate is in
+ *   that slot the page writes the pilot's name over the number. The number
+ *   is drawn first, so a cell whose name was drawn in the last quarter
+ *   second leaves its number out ([mfd] hide_numbers).
+ * - MFD 4's target page leaves its bottom left box empty. When it writes
+ *   the target's name, the target's mech and variant go in the box, from
+ *   the game's player table ([mfd] target_mech). */
+typedef void (__fastcall *DrawText_t)(void *font, void *edx, float x, float y, DWORD colour, const char *s, DWORD align);
+#define DRAW_TEXT 0x423E80
+#define DRAW_LABEL 0x423F40
+#define LABEL_FROM 0x423296			/* the soft keys' labels */
+#define NAMES_FROM 0x62B000			/* MFD 1's pilot names, 0x62B0F9..0x62B206 */
+#define NAMES_TO 0x62B210
+#define TARGET_NAME_FROM 0x634F42		/* MFD 4's target name, top right */
+#define PLAYERS 0x774AF0			/* the player table: 0x72 bytes each... */
+#define PLAYER_SIZE 0x72
+#define PLAYER_COUNT 0x775414			/* ...this many in use */
+#define PLAYER_MAX 20
+#define PLAYER_NAME 0x06			/* char[0x18] */
+#define PLAYER_MECH 0x26			/* "Hunchback HBK-4N", or "Mad Cat" for a stock mech */
+static DrawText_t o_DrawText, o_DrawLabel;
+static int g_hide_numbers, g_target_mech;
+static DWORD g_named[4];			/* when each top cell of MFD 1 last had a name */
+
+/* The game's chassis names, to part a mech's name from its variant's. */
+static const char *const chassis[] = {
+	"Annihilator", "Archer", "Arctic Wolf", "Ares", "Argus", "AssassinII", "Atlas", "Avatar",
+	"Awesome", "Battlemaster", "BattlemasterIIC", "Behemoth", "BehemothII", "Black Hawk",
+	"Black Knight", "Black Lanner", "Brigand", "Bushwacker", "Catapult", "Cauldron-Born", "Chimera",
+	"Commando", "Cougar", "Cyclops", "Daishi", "Deimos", "Dragon", "Fafnir", "Flea", "Gladiator",
+	"Grizzly", "Hauptmann", "Hellhound", "Hellspawn", "Highlander", "HollanderII", "Hunchback",
+	"Kodiak", "Loki", "Longbow", "Mad Cat", "Mad Cat MKII", "Masakari", "Mauler", "Nova Cat",
+	"Osiris", "Owens", "Puma", "Raven", "Rifleman", "Ryoken", "Shadow Cat", "Solitaire", "Sunder",
+	"Templar", "Thanatos", "Thor", "Uller", "Urbanmech", "Uziel", "Victor", "Vulture", "Warhammer",
+	"Wolfhound", "Zeus",
+};
+
+static int field(const char *s, int max)
+{
+	int n = 0;
+	while (n < max && s[n] >= 0x20 && s[n] < 0x7F) n++;
+	return n < max && s[n] == 0 ? n : 0;
+}
+
+/* The mech of the player called name: its chassis and variant. */
+static int target_mech(const char *name, char *mech, int mlen, char *variant, int vlen)
+{
+	int i, n, count;
+	if (IsBadReadPtr((void *)PLAYERS, PLAYER_COUNT + 4 - PLAYERS)) return 0;
+	count = *(const int *)PLAYER_COUNT;
+	if (count < 0 || count > PLAYER_MAX) return 0;
+	for (i = 0; i < count; i++) {
+		const char *r = (const char *)PLAYERS + i * PLAYER_SIZE, *m = r + PLAYER_MECH, *v = "";
+		int best = 0, k;
+		if (!field(r + PLAYER_NAME, 0x18) || strcmp(r + PLAYER_NAME, name)) continue;
+		if (!(n = field(m, PLAYER_SIZE - PLAYER_MECH))) return 0;
+		for (k = 0; k < (int)(sizeof chassis / sizeof *chassis); k++) {
+			int c = strlen(chassis[k]);
+			if (c > best && !strncmp(m, chassis[k], c) && (m[c] == 0 || m[c] == ' ')) best = c;
+		}
+		if (best) {
+			for (v = m + best; *v == ' '; v++) ;
+			n = best;
+		}
+		snprintf(mech, mlen, "%.*s", n, m);
+		snprintf(variant, vlen, "%s", *v ? v : "Stock");
+		return 1;
+	}
+	return 0;
+}
+
+static void __fastcall h_DrawText(void *font, void *edx, float x, float y, DWORD colour, const char *s, DWORD align)
+{
+	DWORD from = (DWORD)__builtin_return_address(0);
+	o_DrawText(font, 0, x, y, colour, s, align);
+	if (from >= NAMES_FROM && from < NAMES_TO && y < 40 && x >= 0 && x < 640)
+		g_named[(int)x / 160] = GetTickCount();
+	else if (from == TARGET_NAME_FROM && g_target_mech && s) {
+		char mech[64], variant[64];
+		if (target_mech(s, mech, sizeof mech, variant, sizeof variant)) {	/* the box is 8..316 across, 337..433 down */
+			o_DrawText(font, 0, 162, 368, colour, mech, 0x22);
+			o_DrawText(font, 0, 162, 402, colour, variant, 0x22);
+		}
+	}
+}
+
+static void __fastcall h_DrawLabel(void *font, void *edx, float x, float y, DWORD colour, const char *s, DWORD align)
+{
+	if (g_hide_numbers && (DWORD)__builtin_return_address(0) == LABEL_FROM && y < 40 && x >= 0 && x < 640
+	    && s && s[0] >= '0' && s[0] <= '9' && !s[1] && GetTickCount() - g_named[(int)x / 160] < 250)
+		return;
+	o_DrawLabel(font, 0, x, y, colour, s, align);
+}
+
+static void text_hooks(void)
+{
+	g_hide_numbers = cfg_int("mfd", "hide_numbers", 1);
+	g_target_mech = cfg_int("mfd", "target_mech", 1);
+	if (!g_hide_numbers && !g_target_mech) return;
+	o_DrawText = (DrawText_t)detour(DRAW_TEXT, (const BYTE *)"\x83\xEC\x0C\x53\x8B\x5C\x24\x20", 8, h_DrawText);
+	if (o_DrawText) o_DrawLabel = (DrawText_t)detour(DRAW_LABEL, (const BYTE *)"\x81\xEC\x9C\x00\x00\x00\x53\x55", 8, h_DrawLabel);
+	if (!o_DrawText || !o_DrawLabel) say("MFD text: this MW4.exe is not the build the shim knows; left alone");
+}
+
+/* ---- the HUD at a wide size
+ *
+ * The HUD is laid out on an 800x600 page and drawn across the whole view,
+ * so at 16:9 it is 1.33x too wide. Its pictures all go through one function
+ * (0x581460: a picture drawn now, or queued and drawn by 0x5815E0 when the
+ * HUD flushes), its text through GameOS's, its panels (the message bar)
+ * through a rectangle helper; all three end in gos_DrawQuads (0x45C500,
+ * stdcall: gos_VERTEX[8 floats], count). Its lines - scales, outlines - go
+ * through gos_DrawLines (0x45C490, the same). On the main view, those are
+ * squeezed toward the middle to the page's own 4:3 shape ([main] hud_4x3).
+ *
+ * Except what follows the 3D view: the target's box and the arrow at the
+ * edge pointing to it (HUDTargetArrow, code 0x64EE00..0x64FB90) are placed
+ * where the camera sees the target, and the camera is widened (above). Each
+ * of their quads keeps its place and is made narrower about its own middle -
+ * the right shape, on the target. */
+#define HUD_QUAD 0x581460			/* thiscall (position, size, colour, ?, now), ret 0x14 */
+#define HUD_QUAD_DRAW 0x5815E0			/* thiscall, 5 arguments, ret 0x14: draws one */
+#define HUD_QUAD_DRAWN 0x581B49			/* ...from here, into gos_DrawQuads */
+#define HUD_RECT_DRAWN 0x6A83F4			/* the rectangle helper, into gos_DrawQuads */
+#define HUD_TEXT_DRAWN 0x44E503			/* GameOS's text, into gos_DrawQuads */
+#define TARGET_ARROW_FROM 0x64EE00
+#define TARGET_ARROW_TO 0x64FB90
+#define GOS_DRAW_QUADS 0x45C500
+#define GOS_DRAW_LINES 0x45C490
+#define GOS_DEVICE 0x796B0C			/* the IDirect3DDevice7 GameOS draws with */
+typedef void (__fastcall *HudQuad_t)(void *q, void *edx, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5);
+typedef void (__stdcall *DrawQuads_t)(float *v, int n);
+static HudQuad_t o_HudQuad, o_HudQuadDraw;
+static DrawQuads_t o_DrawQuads, o_DrawLines;
+enum { SQ_NONE, SQ_PAGE, SQ_IN_PLACE };
+static int g_quad_squeeze;			/* how the HUD picture being drawn is squeezed */
+static void *g_in_place[64];			/* the pictures that follow the 3D view */
+
+static int in_place(void *q)
+{
+	int i;
+	for (i = 0; i < 64; i++)
+		if (g_in_place[i] == q) return i;
+	return -1;
+}
+
+static void __fastcall h_HudQuad(void *q, void *edx, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5)
+{
+	DWORD from = (DWORD)__builtin_return_address(0);
+	int i = in_place(q);
+	if (from >= TARGET_ARROW_FROM && from < TARGET_ARROW_TO) {
+		if (i < 0 && (i = in_place(NULL)) >= 0) g_in_place[i] = q;
+	} else if (i >= 0) g_in_place[i] = NULL;	/* the memory is another picture's now */
+	o_HudQuad(q, 0, a1, a2, a3, a4, a5);
+}
+
+static void __fastcall h_HudQuadDraw(void *q, void *edx, DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5)
+{
+	g_quad_squeeze = in_place(q) >= 0 ? SQ_IN_PLACE : SQ_PAGE;
+	o_HudQuadDraw(q, 0, a1, a2, a3, a4, a5);
+	g_quad_squeeze = SQ_NONE;
+}
+
+/* The size of the main view, if GameOS is drawing on it now. */
+static int drawing_main(DWORD *w, DWORD *h)
+{
+	typedef HRESULT (WINAPI *GetRT_t)(void *, LPDIRECTDRAWSURFACE7 *);
+	void *d3d = *(void **)GOS_DEVICE;
+	LPDIRECTDRAWSURFACE7 rt = NULL;
+	struct dev *d;
+	int i;
+
+	if (!d3d || FAILED(((GetRT_t)(*(void ***)d3d)[9])(d3d, &rt)) || !rt) return 0;
+	for (i = 0, d = NULL; i < MAX_DEVS && !d; i++)
+		if (g_dev[i].dd && (g_dev[i].prim == rt || g_dev[i].back == rt)) d = &g_dev[i];
+	IDirectDrawSurface7_Release(rt);
+	if (!d || d->kind != K_MAIN) return 0;
+	*w = d->w;
+	*h = d->h;
+	return 1;
+}
+
+/* Draw n vertices (in quads of 4, or lines of 2) squeezed, if on the main view. */
+static void squeeze(DrawQuads_t draw, float *v, int n, int per, int how)
+{
+	static float buf[4096 * 8];
+	DWORD w, h;
+	float s, mid;
+	int i, k;
+
+	if (how == SQ_NONE || n <= 0 || n % per || n > 4096 || !drawing_main(&w, &h) || w * 3 <= h * 4) {
+		draw(v, n);
+		return;
+	}
+	s = (float)h * 4 / 3 / w;
+	mid = w / 2.0f;
+	memcpy(buf, v, n * 8 * sizeof(float));		/* the caller's may be kept from frame to frame */
+	for (i = 0; i < n; i += per) {
+		if (how == SQ_IN_PLACE)
+			for (mid = 0, k = i; k < i + per; k++) mid += buf[k * 8] / per;
+		for (k = i; k < i + per; k++)
+			buf[k * 8] = mid + (buf[k * 8] - mid) * s;
+	}
+	draw(buf, n);
+}
+
+static void __stdcall h_DrawQuads(float *v, int n)
+{
+	DWORD from = (DWORD)__builtin_return_address(0);
+	squeeze(o_DrawQuads, v, n, 4, from == HUD_QUAD_DRAWN ? g_quad_squeeze
+		: from == HUD_RECT_DRAWN || from == HUD_TEXT_DRAWN ? SQ_PAGE : SQ_NONE);
+}
+
+/* The HUD's lines: its scales (0x580710, 0x580A80) and the panels' outlines
+ * (0x6A8400, which draws the ones it has gathered). */
+static void __stdcall h_DrawLines(float *v, int n)
+{
+	DWORD from = (DWORD)__builtin_return_address(0);
+	squeeze(o_DrawLines, v, n, 2, from == 0x580A67 || from == 0x580DAD || from == 0x580F07 || from == 0x6A8414
+		? SQ_PAGE : SQ_NONE);
+}
+
+static void hud_hooks(void)
+{
+	if (!g_main_w || !cfg_int("main", "hud_4x3", 1)) return;
+	o_DrawQuads = (DrawQuads_t)detour(GOS_DRAW_QUADS, (const BYTE *)"\xA0\x6C\xA8\x7E\x00", 5, h_DrawQuads);
+	if (o_DrawQuads) {
+		o_DrawLines = (DrawQuads_t)detour(GOS_DRAW_LINES, (const BYTE *)"\xA0\x6C\xA8\x7E\x00", 5, h_DrawLines);
+		o_HudQuad = (HudQuad_t)detour(HUD_QUAD, (const BYTE *)"\x64\xA1\x00\x00\x00\x00\x6A\xFF", 8, h_HudQuad);
+		o_HudQuadDraw = (HudQuad_t)detour(HUD_QUAD_DRAW, (const BYTE *)"\xA1\xAC\xC0\x82\x00\x81\xEC\xC4\x00\x00\x00", 11, h_HudQuadDraw);
+	}
+	if (!o_DrawQuads || !o_DrawLines || !o_HudQuad || !o_HudQuadDraw)
+		say("HUD: this MW4.exe is not the build the shim knows; drawn stretched");
+}
+
+static void widen_hooks(void)
+{
+	static const DWORD sites[] = { 0x51470B, 0x57AE81, 0x60F0E2 };
+	if (!g_main_w || !cfg_int("main", "widen", 1)) return;
+	if (!repoint(sites, 3, SET_PERSPECTIVE, h_SetPerspective))
+		say("main view: this MW4.exe is not the build the shim knows; the view is stretched");
 }
 
 /* The console's slots, filled in from the seats. A pilot seated in a pod
@@ -2584,6 +3042,7 @@ static void redirect_ctcl(void)
 
 typedef struct { DWORD ofs, data, time, seq; } di_event;	/* DIDEVICEOBJECTDATA */
 static const GUID GUID_SysKeyboard_ = { 0x6F1D2B61, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
+static const GUID GUID_SysMouse_    = { 0x6F1D2B60, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
 
 static struct vtpatch g_divt[MAX_VTBLS], g_kbvt[MAX_VTBLS];
 static int g_ndivt, g_nkbvt;
@@ -2596,12 +3055,41 @@ static di_event g_kb_q[256];			/* key events we are typing */
 static int g_kb_qn;
 static DWORD g_kb_seq = 0x40000000;
 static int g_kb_logged;
+/* The mouse, too: GameOS reads its buttons through DirectInput, which a
+ * window behind another (a console behind its pod) is not given - so the
+ * shim's own clicks (fake_click) are handed to it here as well. */
+static void *g_msdev[8];
+static int g_nmsdev;
+static di_event g_ms_q[16];
+static int g_ms_qn;
 
 static int is_kbdev(void *d)
 {
 	int i;
 	for (i = 0; i < g_nkbdev; i++) if (g_kbdev[i] == d) return 1;
 	return 0;
+}
+
+static int is_msdev(void *d)
+{
+	int i;
+	for (i = 0; i < g_nmsdev; i++) if (g_msdev[i] == d) return 1;
+	return 0;
+}
+
+/* The fake left button going down or up, for a game that reads buffered
+ * mouse events (DIMOFS_BUTTON0 is 12). */
+static void ms_button(int down)
+{
+	EnterCriticalSection(&g_kb_lock);
+	if (g_ms_qn < 16) {
+		g_ms_q[g_ms_qn].ofs = 12;
+		g_ms_q[g_ms_qn].data = down ? 0x80 : 0;
+		g_ms_q[g_ms_qn].time = GetTickCount();
+		g_ms_q[g_ms_qn].seq = g_kb_seq++;
+		g_ms_qn++;
+	}
+	LeaveCriticalSection(&g_kb_lock);
 }
 
 /* Queue a key event for the game, and keep the immediate state in step. */
@@ -2625,6 +3113,11 @@ typedef HRESULT (WINAPI *GetDeviceData_t)(void *, DWORD, di_event *, LPDWORD, DW
 static HRESULT WINAPI h_GetDeviceState(void *dev, DWORD n, LPVOID out)
 {
 	HRESULT hr = ((GetDeviceState_t)orig_in(g_kbvt, g_nkbvt, dev, 9))(dev, n, out);
+	if (g_fake_on && is_msdev(dev) && n >= 16) {	/* DIMOUSESTATE: x, y, z, buttons */
+		if (FAILED(hr)) { memset(out, 0, n); hr = S_OK; }
+		((uint8_t *)out)[12] = g_fake_down ? 0x80 : 0;
+		return hr;
+	}
 	if (SUCCEEDED(hr) && is_kbdev(dev) && n >= 256) {
 		uint8_t *k = out;
 		int i;
@@ -2644,6 +3137,24 @@ static HRESULT WINAPI h_GetDeviceData(void *dev, DWORD cb, di_event *ev, LPDWORD
 	DWORD room = inout ? *inout : 0;
 	HRESULT hr = ((GetDeviceData_t)orig_in(g_kbvt, g_nkbvt, dev, 10))(dev, cb, ev, inout, flags);
 
+	if (is_msdev(dev) && inout && cb >= sizeof(di_event) && (g_fake_on || g_ms_qn)) {
+		DWORD i, kept;
+		if (FAILED(hr)) { *inout = 0; hr = S_OK; }
+		kept = *inout;
+		if (ev && !(flags & 1 /* DIGDD_PEEK */)) {
+			EnterCriticalSection(&g_kb_lock);
+			for (i = 0; i < (DWORD)g_ms_qn && kept < room; i++) {
+				di_event *e = (di_event *)((uint8_t *)ev + kept * cb);
+				memset(e, 0, cb);
+				*e = g_ms_q[i];
+				kept++;
+			}
+			if (i) { memmove(g_ms_q, g_ms_q + i, (g_ms_qn - i) * sizeof *g_ms_q); g_ms_qn -= i; }
+			LeaveCriticalSection(&g_kb_lock);
+			*inout = kept;
+		}
+		return hr;
+	}
 	if (FAILED(hr) || !is_kbdev(dev) || !inout || cb < sizeof(di_event)) return hr;
 	if (g_kb_logged++ < 3) say("keyboard: the game reads buffered events (GetDeviceData, %lu bytes each)", cb);
 	if (ev && !(flags & 1 /* DIGDD_PEEK */)) {
@@ -2670,13 +3181,24 @@ static HRESULT WINAPI h_GetDeviceData(void *dev, DWORD cb, di_event *ev, LPDWORD
 	return hr;
 }
 
-static void hook_kbdev(void *dev)
+typedef HRESULT (WINAPI *Acquire_t)(void *);
+
+/* A foreground-only mouse is not acquired while its window is behind; while
+ * the shim is clicking, it is as good as acquired. */
+static HRESULT WINAPI h_Acquire(void *dev)
 {
-	static const int slots[] = { 9, 10 };
-	static void *const fns[] = { h_GetDeviceState, h_GetDeviceData };
-	if (g_nkbdev < 8) g_kbdev[g_nkbdev++] = dev;
-	hook_vtable(g_kbvt, &g_nkbvt, dev, 2, slots, fns, "IDirectInputDevice7 (keyboard)");
-	say("keyboard device %p", dev);
+	HRESULT hr = ((Acquire_t)orig_in(g_kbvt, g_nkbvt, dev, 7))(dev);
+	return FAILED(hr) && g_fake_on && is_msdev(dev) ? S_OK : hr;
+}
+
+static void hook_indev(void *dev, int mouse)
+{
+	static const int slots[] = { 7, 9, 10 };
+	static void *const fns[] = { h_Acquire, h_GetDeviceState, h_GetDeviceData };
+	if (mouse) { if (g_nmsdev < 8) g_msdev[g_nmsdev++] = dev; }
+	else if (g_nkbdev < 8) g_kbdev[g_nkbdev++] = dev;
+	hook_vtable(g_kbvt, &g_nkbvt, dev, 3, slots, fns, "IDirectInputDevice7");
+	say("%s device %p", mouse ? "mouse" : "keyboard", dev);
 }
 
 typedef HRESULT (WINAPI *DICreateDevice_t)(void *, REFGUID, void **, IUnknown *);
@@ -2685,14 +3207,16 @@ typedef HRESULT (WINAPI *DICreateDeviceEx_t)(void *, REFGUID, REFIID, void **, I
 static HRESULT WINAPI h_DICreateDevice(void *di, REFGUID g, void **out, IUnknown *u)
 {
 	HRESULT hr = ((DICreateDevice_t)orig_in(g_divt, g_ndivt, di, 3))(di, g, out, u);
-	if (SUCCEEDED(hr) && IsEqualGUID(g, &GUID_SysKeyboard_)) hook_kbdev(*out);
+	if (SUCCEEDED(hr) && (IsEqualGUID(g, &GUID_SysKeyboard_) || IsEqualGUID(g, &GUID_SysMouse_)))
+		hook_indev(*out, IsEqualGUID(g, &GUID_SysMouse_));
 	return hr;
 }
 
 static HRESULT WINAPI h_DICreateDeviceEx(void *di, REFGUID g, REFIID iid, void **out, IUnknown *u)
 {
 	HRESULT hr = ((DICreateDeviceEx_t)orig_in(g_divt, g_ndivt, di, 9))(di, g, iid, out, u);
-	if (SUCCEEDED(hr) && IsEqualGUID(g, &GUID_SysKeyboard_)) hook_kbdev(*out);
+	if (SUCCEEDED(hr) && (IsEqualGUID(g, &GUID_SysKeyboard_) || IsEqualGUID(g, &GUID_SysMouse_)))
+		hook_indev(*out, IsEqualGUID(g, &GUID_SysMouse_));
 	return hr;
 }
 
@@ -2774,20 +3298,23 @@ static void kb_type(const char *t)
  * Up, Down, Left, Right, Num0-Num9, PageUp, PageDown, Home, End, Insert,
  * Delete, ScrollLock, or 0xNN for any virtual-key code; "none" for none) and
  * a pad button ([pad] <action> = A, B, X, Y, LB, RB, LT, RT, Back, Start, LS,
- * RS, DUp, DDown, DLeft, DRight, or none). The MFD soft keys (F1-F8, the
- * selected MFD) and the radar's (Ctrl/Shift + F1-F6) are fixed: they are the
- * panel. */
+ * RS, DUp, DDown, DLeft, DRight, or none) - and a USB controller's button
+ * or hat ([joy] <action>, below). The MFD soft keys (F1-F8, the selected MFD)
+ * and the radar's (Ctrl/Shift + F1-F6) are fixed: they are the panel. */
 enum {
 	A_THROTTLE_UP, A_THROTTLE_DOWN, A_THROTTLE_FULL, A_THROTTLE_ZERO,
 	A_PEDAL_LEFT, A_PEDAL_RIGHT, A_TWIST_LEFT, A_TWIST_RIGHT, A_AIM_UP, A_AIM_DOWN,
 	A_FIRE1, A_FIRE2, A_FIRE3, A_FIRE_ALL, A_THROTTLE_BUTTON, A_PANIC,
-	A_MFD_PREV, A_MFD_NEXT, A_MOUSE, A_COUNT
+	A_MFD_PREV, A_MFD_NEXT, A_MOUSE,
+	A_HAT_UP, A_HAT_DOWN, A_HAT_LEFT, A_HAT_RIGHT, A_BUTTON4, A_COUNT
 };
+struct jref { char dev[48]; int what, neg, idx; };	/* a USB controller's input: see [joy] */
 static struct bind {
 	const char *name, *keys, *pad;
 	int vk[4];
 	WORD pad_bits;
 	int trigger;			/* 1 left, 2 right */
+	struct jref joy;
 } g_bind[A_COUNT] = {
 	{ "throttle_up", "R", "none" },		{ "throttle_down", "F", "none" },
 	{ "throttle_full", "none", "DUp" },	{ "throttle_zero", "none", "DDown" },
@@ -2799,6 +3326,9 @@ static struct bind {
 	{ "throttle_button", "F11", "LB" },	{ "panic", "F12", "none" },
 	{ "mfd_prev", "F9", "DLeft" },		{ "mfd_next", "F10", "DRight" },
 	{ "mouse", "ScrollLock", "none" },
+	{ "hat_up", "Up", "none" },		{ "hat_down", "Down", "none" },
+	{ "hat_left", "Left", "none" },		{ "hat_right", "Right", "none" },
+	{ "button4", "none", "none" },
 };
 
 static int vk_named(const char *s)
@@ -3214,8 +3744,253 @@ static void pad_read(struct pad *p)
 	p->b = st.g.b;
 }
 
+/* ---- USB controllers
+ *
+ * Any game controller Windows knows - an RP2040 or an Arduino built as a USB
+ * joystick, a flight stick, a set of pedals - several at once, read through
+ * winmm's joystick API (up to six axes, 32 buttons and a hat each). The pod's
+ * throttle, stick and pedals can each be a controller of their own. In
+ * shim.ini [joy] a controller is named by its USB ids ("2E8A:1001"), by part
+ * of its name as Windows shows it ("Throttle"), or by number ("#0"):
+ *
+ *   throttle, pedal_left, pedal_right, stick_x, stick_y = CONTROLLER.AXIS
+ *       AXIS one of X Y Z R U V; a "-" in front turns it round. The throttle
+ *       is the lever's position, closed at the axis's low end (it takes over
+ *       from the keys when it moves); a pedal rests at its low end; the
+ *       stick centres, pushed forward (low Y) aiming down.
+ *   deadzone = 4 (percent: about the stick's centre, above a pedal's and the
+ *       lever's rest)
+ *   <action> = CONTROLLER.Bn (button n, from 1) or CONTROLLER.HatUp, HatDown,
+ *       HatLeft, HatRight - any action [keys] has, the hat's among them.
+ *   enabled = 0 ignores them all.
+ *
+ * By default the cockpit's own controllers (firmware/rp2040-controls) are
+ * used as they are named: "Firestorm Throttle" X the lever, button 1 the
+ * throttle button, 2 panic; "Firestorm Stick" X and Y, buttons 1-4 the
+ * trigger, groups 2 and 3, button 4, its hat the hat; "Firestorm Pedals" X
+ * the left pedal, Y the right. "none" turns a default off.
+ *
+ * Controllers plugged in or out while the game runs are found again within
+ * two seconds; the log names each one found. */
+#define JMAX 16
+static struct jdev {
+	int ok;
+	WORD vid, pid;
+	char name[64];
+	DWORD lo[6], hi[6];
+	JOYINFOEX st;
+} g_jd[JMAX];
+enum { J_THROTTLE, J_PEDAL_L, J_PEDAL_R, J_STICK_X, J_STICK_Y, J_AXES };
+static struct jref g_jaxis[J_AXES];
+static int g_joy_on = -1, g_joy_dead;
+
+/* "Stick.X", "-Pedals.Y", "2E8A:1001.B3", "#0.HatUp": what 0-5 an axis,
+ * 101-132 a button, 201-204 the hat up, down, left, right. */
+static void jref_parse(struct jref *r, const char *s)
+{
+	static const char *hats[] = { "hatup", "hatdown", "hatleft", "hatright" };
+	const char *dot;
+	int i;
+
+	memset(r, 0, sizeof *r);
+	r->idx = -1;
+	while (*s == ' ') s++;
+	if (*s == '-') { r->neg = 1; s++; }
+	if (!*s || !_stricmp(s, "none") || !(dot = strrchr(s, '.'))) return;
+	snprintf(r->dev, sizeof r->dev, "%.*s", (int)(dot - s), s);
+	dot++;
+	if (dot[0] && !dot[1] && strchr("XYZRUVxyzruv", dot[0]))
+		r->what = (int)(strchr("XYZRUV", toupper((unsigned char)dot[0])) - "XYZRUV");
+	else if ((dot[0] == 'B' || dot[0] == 'b') && atoi(dot + 1) >= 1 && atoi(dot + 1) <= 32)
+		r->what = 100 + atoi(dot + 1);
+	else {
+		for (i = 0; i < 4; i++) if (!_stricmp(dot, hats[i])) r->what = 201 + i;
+		if (i == 4 && !r->what) { say("[joy] \"%s\": no input \"%s\"", s, dot); r->dev[0] = 0; }
+	}
+}
+
+/* Which controller a name means, if one is plugged in. */
+static int jdev_find(const char *dev)
+{
+	unsigned v, p;
+	int i;
+
+	if (!dev[0]) return -1;
+	if (dev[0] == '#') return (i = atoi(dev + 1)) >= 0 && i < JMAX && g_jd[i].ok ? i : -1;
+	if (sscanf(dev, "%x:%x", &v, &p) == 2 && strlen(dev) == 9) {
+		for (i = 0; i < JMAX; i++) if (g_jd[i].ok && g_jd[i].vid == v && g_jd[i].pid == p) return i;
+		return -1;
+	}
+	for (i = 0; i < JMAX; i++) {
+		char a[64], b[48];
+		int k;
+		if (!g_jd[i].ok) continue;
+		for (k = 0; g_jd[i].name[k] && k < 63; k++) a[k] = (char)tolower((unsigned char)g_jd[i].name[k]);
+		a[k] = 0;
+		for (k = 0; dev[k] && k < 47; k++) b[k] = (char)tolower((unsigned char)dev[k]);
+		b[k] = 0;
+		if (strstr(a, b)) return i;
+	}
+	return -1;
+}
+
+/* The name Windows shows for a controller: its OEMName, by USB ids. */
+static void jdev_name(struct jdev *d, int id)
+{
+	static const char *base = "System\\CurrentControlSet\\Control\\MediaProperties\\PrivateProperties\\Joystick\\OEM\\";
+	char key[200];
+	DWORD n = sizeof d->name;
+	HKEY h;
+
+	snprintf(d->name, sizeof d->name, "controller %d", id);
+	snprintf(key, sizeof key, "%sVID_%04X&PID_%04X", base, d->vid, d->pid);
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, key, 0, KEY_READ, &h) == ERROR_SUCCESS ||
+	    RegOpenKeyExA(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &h) == ERROR_SUCCESS) {
+		if (RegQueryValueExA(h, "OEMName", NULL, NULL, (BYTE *)d->name, &n) != ERROR_SUCCESS)
+			snprintf(d->name, sizeof d->name, "controller %d", id);
+		RegCloseKey(h);
+	}
+}
+
+static void joy_scan(void)
+{
+	UINT n = joyGetNumDevs(), id;
+	int a;
+
+	for (id = 0; id < JMAX; id++) {
+		struct jdev *d = &g_jd[id];
+		JOYCAPSA c;
+		JOYINFOEX st;
+		int was = d->ok;
+
+		memset(&st, 0, sizeof st);
+		st.dwSize = sizeof st;
+		st.dwFlags = JOY_RETURNALL;
+		d->ok = id < n && joyGetDevCapsA(id, &c, sizeof c) == JOYERR_NOERROR &&
+			joyGetPosEx(id, &st) == JOYERR_NOERROR;
+		if (!d->ok) {
+			if (was) say("joystick %u: unplugged", id);
+			continue;
+		}
+		if (!was || d->vid != c.wMid || d->pid != c.wPid) {
+			d->vid = c.wMid;
+			d->pid = c.wPid;
+			jdev_name(d, (int)id);
+			say("joystick %u: %04X:%04X \"%s\", %u axes, %u buttons%s", id, d->vid, d->pid, d->name,
+			    c.wNumAxes, c.wNumButtons, c.wCaps & JOYCAPS_HASPOV ? ", a hat" : "");
+		}
+		d->lo[0] = c.wXmin; d->hi[0] = c.wXmax; d->lo[1] = c.wYmin; d->hi[1] = c.wYmax;
+		d->lo[2] = c.wZmin; d->hi[2] = c.wZmax; d->lo[3] = c.wRmin; d->hi[3] = c.wRmax;
+		d->lo[4] = c.wUmin; d->hi[4] = c.wUmax; d->lo[5] = c.wVmin; d->hi[5] = c.wVmax;
+	}
+	for (a = 0; a < J_AXES; a++) g_jaxis[a].idx = jdev_find(g_jaxis[a].dev);
+	for (a = 0; a < A_COUNT; a++) g_bind[a].joy.idx = jdev_find(g_bind[a].joy.dev);
+}
+
+/* Read the controllers in use, once a tick; look for new ones every 2 s. */
+static const char *const g_joy_axis_name[J_AXES][2] = {
+	{ "throttle", "Firestorm Throttle.X" }, { "pedal_left", "Firestorm Pedals.X" },
+	{ "pedal_right", "Firestorm Pedals.Y" }, { "stick_x", "Firestorm Stick.X" }, { "stick_y", "Firestorm Stick.Y" },
+};
+static const char *const g_joy_bind_default[][2] = {
+	{ "fire1", "Firestorm Stick.B1" }, { "fire2", "Firestorm Stick.B2" }, { "fire3", "Firestorm Stick.B3" },
+	{ "button4", "Firestorm Stick.B4" }, { "hat_up", "Firestorm Stick.HatUp" },
+	{ "hat_down", "Firestorm Stick.HatDown" }, { "hat_left", "Firestorm Stick.HatLeft" },
+	{ "hat_right", "Firestorm Stick.HatRight" }, { "throttle_button", "Firestorm Throttle.B1" },
+	{ "panic", "Firestorm Throttle.B2" },
+};
+
+static void joy_poll(void)
+{
+	static DWORD scanned;
+	int used[JMAX] = { 0 }, a, i;
+	char buf[96];
+
+	if (g_joy_on < 0) {
+		g_joy_on = cfg_int("joy", "enabled", 1);
+		g_joy_dead = cfg_int("joy", "deadzone", 4) * 10;
+		for (a = 0; a < J_AXES; a++) {
+			cfg_str("joy", g_joy_axis_name[a][0], g_joy_axis_name[a][1], buf, sizeof buf);
+			jref_parse(&g_jaxis[a], buf);
+		}
+		for (a = 0; a < A_COUNT; a++) {
+			const char *def = "";
+			for (i = 0; i < (int)(sizeof g_joy_bind_default / sizeof *g_joy_bind_default); i++)
+				if (!strcmp(g_joy_bind_default[i][0], g_bind[a].name)) def = g_joy_bind_default[i][1];
+			cfg_str("joy", g_bind[a].name, def, buf, sizeof buf);
+			jref_parse(&g_bind[a].joy, buf);
+		}
+	}
+	if (!g_joy_on) return;
+	if (!scanned || GetTickCount() - scanned > 2000) { joy_scan(); scanned = GetTickCount(); }
+	for (a = 0; a < J_AXES; a++) if (g_jaxis[a].idx >= 0) used[g_jaxis[a].idx] = 1;
+	for (a = 0; a < A_COUNT; a++) if (g_bind[a].joy.idx >= 0) used[g_bind[a].joy.idx] = 1;
+	for (i = 0; i < JMAX; i++) {
+		if (!used[i] || !g_jd[i].ok) continue;
+		g_jd[i].st.dwSize = sizeof g_jd[i].st;
+		g_jd[i].st.dwFlags = JOY_RETURNALL;
+		if (joyGetPosEx((UINT)i, &g_jd[i].st) != JOYERR_NOERROR) g_jd[i].ok = 0;	/* until the next scan */
+	}
+}
+
+/* An axis from 0 (its low end) to 1000; -1 if it is not there. */
+static int joy_axis(int a)
+{
+	const struct jref *r = &g_jaxis[a];
+	const struct jdev *d;
+	DWORD v, lo, hi;
+	int x;
+
+	if (!g_joy_on || r->idx < 0 || r->what > 5 || !(d = &g_jd[r->idx])->ok) return -1;
+	v = (&d->st.dwXpos)[r->what];
+	lo = d->lo[r->what];
+	hi = d->hi[r->what];
+	if (hi <= lo) return -1;
+	x = v <= lo ? 0 : v >= hi ? 1000 : (int)((v - lo) * 1000.0 / (hi - lo));
+	return r->neg ? 1000 - x : x;
+}
+
+/* A resting axis (throttle, pedal): 0-1000, nothing within the dead zone. */
+static int joy_rest(int a)
+{
+	int x = joy_axis(a);
+	if (x < 0) return -1;
+	return x <= g_joy_dead ? 0 : (x - g_joy_dead) * 1000 / (1000 - g_joy_dead);
+}
+
+/* A centring axis (the stick): -1000 to 1000, 0 within the dead zone. */
+static int joy_centred(int a)
+{
+	int x = joy_axis(a), c;
+	if (x < 0) return 0;
+	c = x * 2 - 1000;
+	if (c > g_joy_dead) return (c - g_joy_dead) * 1000 / (1000 - g_joy_dead);
+	if (c < -g_joy_dead) return (c + g_joy_dead) * 1000 / (1000 - g_joy_dead);
+	return 0;
+}
+
+/* Whether a controller holds an action: its button, or its hat that way
+ * (a diagonal holds both directions). */
+static int joy_held(int a)
+{
+	const struct jref *r = &g_bind[a].joy;
+	const struct jdev *d;
+	DWORD pov;
+
+	if (!g_joy_on || r->idx < 0 || !(d = &g_jd[r->idx])->ok) return 0;
+	if (r->what > 100 && r->what <= 132) return (d->st.dwButtons >> (r->what - 101)) & 1;
+	pov = d->st.dwPOV;
+	if (r->what < 201 || pov > 35999) return 0;
+	switch (r->what) {
+	case 201: return pov >= 31500 || pov <= 4500;
+	case 202: return pov >= 13500 && pov <= 22500;
+	case 203: return pov >= 22500 && pov <= 31500;
+	default:  return pov >= 4500 && pov <= 13500;
+	}
+}
+
 /* Whether an action is held: one of its keys (with a game window focused),
- * or its pad button. */
+ * its pad button, or its USB controller's button or hat. */
 static int held(int a, int focus, const struct pad *pad)
 {
 	const struct bind *b = &g_bind[a];
@@ -3224,6 +3999,7 @@ static int held(int a, int focus, const struct pad *pad)
 	if (focus)
 		for (i = 0; i < 4 && b->vk[i]; i++)
 			if (key(b->vk[i])) return 1;
+	if (joy_held(a)) return 1;
 	if (!pad->ok) return 0;
 	return (pad->b & b->pad_bits) || (b->trigger == 1 && pad->lt) || (b->trigger == 2 && pad->rt);
 }
@@ -3252,6 +4028,8 @@ static void stick_button(int *state, int id, int down)
 static DWORD WINAPI rio_main(LPVOID p)
 {
 	int throttle = 0, trigger = 0, b46 = 0, b47 = 0, b3f = 0, b3e = 0, all;
+	int hat[4] = { 0 }, b45 = 0, lever = -100, calib = -1;
+	DWORD rest_until = 0;
 	int was_prev = 0, was_next = 0, was_mouse = 0;
 	DWORD last = 0, jl_at = 0, ik_at = 0;
 
@@ -3266,6 +4044,7 @@ static DWORD WINAPI rio_main(LPVOID p)
 		plasma_draw();
 		panel_keys(focus);
 		pad_read(&pad);
+		joy_poll();
 
 		if (held(A_THROTTLE_UP, focus, &pad)) throttle += 2;
 		if (held(A_THROTTLE_DOWN, focus, &pad)) throttle -= 2;
@@ -3275,6 +4054,10 @@ static DWORD WINAPI rio_main(LPVOID p)
 			throttle += part / 500;
 			part %= 500;
 		}
+		/* The lever, where there is one: it takes over when it moves, so
+		 * the keys still work while it rests. */
+		h = joy_rest(J_THROTTLE);
+		if (h >= 0 && abs(h / 10 - lever) >= 1) { lever = h / 10; throttle = lever; }
 		if (held(A_THROTTLE_FULL, focus, &pad)) throttle = 100;
 		if (held(A_THROTTLE_ZERO, focus, &pad)) throttle = 0;
 		if (throttle > 100) throttle = 100;
@@ -3286,6 +4069,10 @@ static DWORD WINAPI rio_main(LPVOID p)
 		   : held(A_TWIST_RIGHT, focus, &pad) ? stick_ramp(&jl_at) : (int)(jl_at = 0);
 		sy = held(A_AIM_UP, focus, &pad) ? stick_ramp(&ik_at)
 		   : held(A_AIM_DOWN, focus, &pad) ? -stick_ramp(&ik_at) : (int)(ik_at = 0);
+		if ((h = joy_rest(J_PEDAL_L)) > 0 && h / 2 > lp) lp = h / 2;
+		if ((h = joy_rest(J_PEDAL_R)) > 0 && h / 2 > rp) rp = h / 2;
+		if ((h = joy_centred(J_STICK_X)) != 0) sx = h * 75 / 1000;
+		if ((h = joy_centred(J_STICK_Y)) != 0) sy = h * 75 / 1000;
 		if (pad.ok) {
 			if (pad.lx < 0 && -pad.lx / 2 > lp) lp = -pad.lx / 2;
 			if (pad.lx > 0 && pad.lx / 2 > rp) rp = pad.lx / 2;
@@ -3304,14 +4091,20 @@ static DWORD WINAPI rio_main(LPVOID p)
 		was_mouse = h;
 
 		/* The stick's buttons fire weapon groups 1, 2 and 3; all three at
-		 * once fire everything (the stick's fourth button, which the board
-		 * never reports, does nothing in this build). */
+		 * once fire everything. Its fourth button (0x45) does nothing in
+		 * this build. The hat looks round while held: forward (0x42) down,
+		 * back (0x41) behind, left 0x44, right 0x43 (pod manual, and seen). */
 		all = held(A_FIRE_ALL, focus, &pad);
 		stick_button(&trigger, 0x40, all || held(A_FIRE1, focus, &pad));
 		stick_button(&b47, 0x47, all || held(A_FIRE2, focus, &pad));
 		stick_button(&b46, 0x46, all || held(A_FIRE3, focus, &pad));
 		stick_button(&b3f, 0x3F, held(A_THROTTLE_BUTTON, focus, &pad));
 		stick_button(&b3e, 0x3E, held(A_PANIC, focus, &pad));
+		stick_button(&b45, 0x45, held(A_BUTTON4, focus, &pad));
+		stick_button(&hat[0], 0x42, held(A_HAT_UP, focus, &pad));
+		stick_button(&hat[1], 0x41, held(A_HAT_DOWN, focus, &pad));
+		stick_button(&hat[2], 0x44, held(A_HAT_LEFT, focus, &pad));
+		stick_button(&hat[3], 0x43, held(A_HAT_RIGHT, focus, &pad));
 
 		if (GetTickCount() - last >= 50) {
 			int v[5], i;
@@ -3322,6 +4115,18 @@ static DWORD WINAPI rio_main(LPVOID p)
 			v[3] = sy;
 			v[4] = -sx;
 			if (g_ctl_axes_on) memcpy(v, g_ctl_axes, sizeof v);
+			/* The game calibrates on what it sees: the throttle's closed end
+			 * is the highest value since it last started over (0x76B620,
+			 * set to 0x80000000 by the RIO's setup for each game, 0x567D2D
+			 * and 0x567EF9), a pedal's rest the lowest. A lever left open,
+			 * or a foot on a pedal, would become "closed" and "at rest". So
+			 * whenever it has started over it is shown them at rest for
+			 * half a second, whatever the controls say. */
+			if (calib < 0)
+				calib = !IsBadReadPtr((void *)0x567D2D, 10) &&
+					!memcmp((void *)0x567D2D, "\xC7\x05\x20\xB6\x76\x00\x00\x00\x00\x80", 10);
+			if (calib && *(volatile LONG *)0x76B620 == (LONG)0x80000000) rest_until = GetTickCount() + 500;
+			if ((LONG)(rest_until - GetTickCount()) > 0) v[0] = v[1] = v[2] = 0;
 			/* To the game a stick value of exactly 0 means "as before": it
 			 * holds Y at its last value, and flips X's sign every message
 			 * (0x569060) - a tap aimed all the way, and the view shook. A
@@ -3361,7 +4166,16 @@ static DWORD WINAPI rio_main(LPVOID p)
  *
  * The game centres a name on (56, 15), so the sign is 112 dots wide; its
  * boxes reach row 30, so 32 high. [plasma] port picks the COM number
- * (default 2); enabled = 0 leaves the port alone. */
+ * (default 2); enabled = 0 leaves the port alone.
+ *
+ * The pilot's rank. The launcher keeps each pilot's career and writes their
+ * ranks to profiles\ranks.ini ("Name=4,SERGEANT,SGT"). Whenever the game
+ * has written a name on the sign (text above row 16) and that pilot has a
+ * rank, the rank goes on the top row, rows 0-6, which the game never uses:
+ * "SERGEANT", with stars either side from Sergeant up - a veteran, seen
+ * across the room. It is written as the game would write it, into the same
+ * stream, so a real sign fed from the control port shows it too; the
+ * game's font and place are put back after ([plasma] ranks = 0: never). */
 #define PL_W 112
 #define PL_H 32
 static HANDLE g_plasma_h;
@@ -3437,21 +4251,82 @@ static void pl_rect(int x0, int y0, int x1, int y1, int fill, int on)
 			if (fill || y == y0 || y == y1 || x == x0 || x == x1) pl_dot(x, y, on);
 }
 
+static char g_pl_name[32];		/* the name on the sign, as the game wrote it */
+static char g_pl_shown[40];		/* the rank line on it now */
+static int g_pl_ranks = -1, g_pl_cx, g_pl_cy, g_pl_font, g_pl_inside;
+static CRITICAL_SECTION g_pl_feed;		/* one writer at a time: the game, or the rank */
+
+static void plasma_feed(const uint8_t *b, DWORD n);
+
+/* Put the rank line for the pilot named on the sign on its top row - again
+ * if `force` (the game may have drawn over it), else only if it changed. */
+static void plasma_rank(int force)
+{
+	char ini[MAX_PATH], v[64], line[40] = "", *title, *e;
+	uint8_t out[80];
+	int rank, stars, k = 0, len, i;
+
+	if (g_pl_ranks < 0) g_pl_ranks = cfg_int("plasma", "ranks", 1);
+	if (!g_pl_ranks) return;
+	if (g_pl_name[0]) {
+		snprintf(ini, sizeof ini, "%sprofiles\\ranks.ini", g_dir);
+		GetPrivateProfileStringA("ranks", g_pl_name, "", v, sizeof v, ini);
+		rank = strtol(v, &e, 10);
+		if (rank >= 1 && *e == ',') {
+			title = e + 1;
+			if ((e = strchr(title, ','))) *e = 0;
+			stars = rank >= 4 ? (rank - 3 > 3 ? 3 : rank - 3) : 0;
+			snprintf(line, sizeof line, "%.*s%s%.12s%s%.*s", stars, "***", stars ? " " : "", title,
+				 stars ? " " : "", stars, "***");
+		}
+	}
+	if (!strcmp(line, g_pl_shown) && (!force || !line[0])) return;
+	len = (int)strlen(line);
+	out[k++] = 0x1B; out[k++] = 0x78; out[k++] = 0; out[k++] = 0; out[k++] = 0; out[k++] = PL_W - 1; out[k++] = 6;
+	if (len) {
+		out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = 0;
+		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = 0;
+		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)((PL_W - len * 6) / 2 > 0 ? (PL_W - len * 6) / 2 : 0);
+		for (i = 0; i < len; i++) out[k++] = (uint8_t)line[i];
+		out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = (uint8_t)g_pl_font;	/* the game's own, as it left them */
+		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = (uint8_t)g_pl_cy;
+		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)g_pl_cx;
+	}
+	strcpy(g_pl_shown, line);
+	g_pl_inside = 1;
+	plasma_feed(out, k);
+	g_pl_inside = 0;
+}
+
+/* Now and then, from the frame loop: a pilot promoted since the game last
+ * wrote the sign shows their new rank at once. */
+static void plasma_poll(void)
+{
+	static DWORD last;
+	if (!g_plasma_h || GetTickCount() - last < 3000) return;
+	last = GetTickCount();
+	EnterCriticalSection(&g_pl_feed);
+	plasma_rank(0);
+	LeaveCriticalSection(&g_pl_feed);
+}
+
 /* The bytes the game writes, a command at a time. */
 static void plasma_feed(const uint8_t *b, DWORD n)
 {
 	static uint8_t cmd[8];
-	static int have, need, cx, cy, font;
+	static int have, need, in_text;
 	char hex[3 * 64 + 1];
 	DWORD i;
 	int k = 0;
 
+	EnterCriticalSection(&g_pl_feed);
 	for (i = 0; i < n && k < (int)sizeof hex - 4; i++) k += sprintf(hex + k, " %02X", b[i]);
 	rio_tell("plasma%s%s", hex, i < n ? " ..." : "");
 	EnterCriticalSection(&g_pl_lock);
 	for (i = 0; i < n; i++) {
 		uint8_t c = b[i];
 		if (have) {
+			in_text = 0;
 			cmd[have++] = c;
 			if (have == 2)
 				switch (c) {
@@ -3463,10 +4338,15 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 				}
 			if (have < need) continue;
 			switch (cmd[1]) {
-			case 0x40: memset(g_pl, 0, sizeof g_pl); cx = cy = 0; break;
-			case 0x52: cx = cmd[2]; break;
-			case 0x51: cy = cmd[2]; break;
-			case 0x4B: font = cmd[2]; break;
+			case 0x40:
+				memset(g_pl, 0, sizeof g_pl);
+				g_pl_cx = g_pl_cy = 0;
+				g_pl_shown[0] = 0;
+				if (!g_pl_inside) g_pl_name[0] = 0;
+				break;
+			case 0x52: g_pl_cx = cmd[2]; break;
+			case 0x51: g_pl_cy = cmd[2]; break;
+			case 0x4B: g_pl_font = cmd[2]; break;
 			case 0x58: pl_rect(cmd[2], cmd[3], cmd[4], cmd[5], 0, 1); break;
 			case 0x78: pl_rect(cmd[3], cmd[4], cmd[5], cmd[6], 1, cmd[2] != 0); break;
 			}
@@ -3474,11 +4354,25 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 		} else if (c == 0x1B) {
 			have = 1;
 			need = 2;
-		} else
-			cx += pl_char(cx, cy, c, font == 4 || font == 5);
+		} else {
+			if (!g_pl_inside && g_pl_cy < 16) {	/* the name, a run of text at a time */
+				size_t l = in_text ? strlen(g_pl_name) : 0;
+				if (l + 1 < sizeof g_pl_name) { g_pl_name[l] = (char)c; g_pl_name[l + 1] = 0; }
+			}
+			in_text = 1;
+			g_pl_cx += pl_char(g_pl_cx, g_pl_cy, c, g_pl_font == 4 || g_pl_font == 5);
+		}
 	}
 	LeaveCriticalSection(&g_pl_lock);
 	InterlockedExchange(&g_pl_dirty, 1);
+	if (!g_pl_inside) {
+		char *s = g_pl_name, *e = s + strlen(s);
+		while (*s == ' ') s++;			/* the game pads to rub out what was there */
+		while (e > s && e[-1] == ' ') *--e = 0;
+		if (s != g_pl_name) memmove(g_pl_name, s, strlen(s) + 1);
+		plasma_rank(1);
+	}
+	LeaveCriticalSection(&g_pl_feed);
 }
 
 /* Draw the sign: lit dots orange, unlit ones a faint glow, as on the glass. */
@@ -3489,6 +4383,7 @@ static void plasma_draw(void)
 	static DWORD last;
 	int x, y, i, j;
 
+	plasma_poll();
 	if (!g_plasma_win) return;
 	/* now and then regardless, for a window uncovered */
 	if (!InterlockedExchange(&g_pl_dirty, 0) && GetTickCount() - last < 1000) return;
@@ -3511,6 +4406,7 @@ static HANDLE plasma_open(const char *name)
 {
 	if (!g_plasma_h) {
 		InitializeCriticalSection(&g_pl_lock);
+		InitializeCriticalSection(&g_pl_feed);
 		g_plasma_h = CreateEventA(NULL, TRUE, FALSE, NULL);
 		if (cfg_int("shim", "cockpit_windows", g_cockpit))
 			g_plasma_win = make_window("Plasma sign", "plasma", 1500, 0, PL_W * 6, PL_H * 6);
@@ -3783,6 +4679,68 @@ static void rio_hooks(void)
  * .text and exits. A vectored handler runs before it, so the shim logs the
  * real address, the registers, and the stack words that point into MW4.exe's
  * code - enough of a call chain to find the caller. First fault only. */
+/* [shim] watch = ADDR (hex), a debugging aid: once the game runs, a data
+ * watchpoint on the four bytes at ADDR in every thread; each write is logged
+ * with the instruction after it, the value and return addresses. */
+#include <tlhelp32.h>
+static DWORD g_watch;
+
+static LONG CALLBACK on_watch(PEXCEPTION_POINTERS ep)
+{
+	PEXCEPTION_RECORD er = ep->ExceptionRecord;
+	PCONTEXT c = ep->ContextRecord;
+	static LONG n;
+
+	if (er->ExceptionCode != EXCEPTION_SINGLE_STEP || !(c->Dr6 & 1)) return EXCEPTION_CONTINUE_SEARCH;
+	c->Dr6 = 0;
+	if (InterlockedIncrement(&n) < 300) {
+		DWORD *sp = (DWORD *)c->Esp;
+		char st[200] = "";
+		int i, k = 0;
+		for (i = 0; i < 96 && k < 8 && !IsBadReadPtr(sp + i, 4); i++)
+			if (sp[i] >= 0x401000 && sp[i] < 0x700000)
+				k++, snprintf(st + strlen(st), sizeof st - strlen(st), " %08lX", sp[i]);
+		say("watch %08lX = %lu, after eip %08lX (thread %lu); stack%s", g_watch,
+		    *(volatile DWORD *)g_watch, c->Eip, GetCurrentThreadId(), st);
+	}
+	return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+static DWORD WINAPI watch_main(LPVOID unused)
+{
+	DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+	int round;
+
+	Sleep(3000);
+	AddVectoredExceptionHandler(1, on_watch);
+	for (round = 0; round < 600; round++) {		/* new threads too, for a while */
+		HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+		THREADENTRY32 te;
+		te.dwSize = sizeof te;
+		if (snap != INVALID_HANDLE_VALUE && Thread32First(snap, &te)) do {
+			HANDLE t;
+			CONTEXT c;
+			if (te.th32OwnerProcessID != pid || te.th32ThreadID == me) continue;
+			t = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+			if (!t) continue;
+			SuspendThread(t);
+			memset(&c, 0, sizeof c);
+			c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+			if (GetThreadContext(t, &c) && c.Dr0 != g_watch) {
+				c.Dr0 = g_watch;
+				c.Dr7 = (c.Dr7 & ~0x000F0003u) | 0x1 | (0x1u << 16) | (0x3u << 18);
+				SetThreadContext(t, &c);
+			}
+			ResumeThread(t);
+			CloseHandle(t);
+		} while (Thread32Next(snap, &te));
+		if (snap != INVALID_HANDLE_VALUE) CloseHandle(snap);
+		if (!round) say("watch: writes to %08lX, value now %lu", g_watch, *(volatile DWORD *)g_watch);
+		Sleep(500);
+	}
+	return 0;
+}
+
 static LONG CALLBACK on_fault(PEXCEPTION_POINTERS ep)
 {
 	static LONG seen;
@@ -3872,10 +4830,31 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD why, LPVOID r)
 		say("settings: %s%s", g_ini, GetFileAttributesA(g_ini) == INVALID_FILE_ATTRIBUTES ? " (absent; defaults)" : "");
 		load_real();
 		redirect_ctcl();
+		if (strcmp(g_role, "launcher")) {
+			char from[MAX_PATH];
+			snprintf(from, sizeof from, "%soptions.ini", g_dir);
+			/* mw4print shares the console's folder; it reads [battle tech
+			 * print], the report's layout, which the console's rewrite drops -
+			 * so a copy of its own beside the console's. */
+			snprintf(g_opts, sizeof g_opts, "%s\\%s", g_files, g_launcher ? "options-mw4print.ini" : "options.ini");
+			if (CopyFileA(from, g_opts, FALSE))
+				say("options: options.ini as %s, the copy this %s reads and rewrites", g_opts, g_launcher ? "printer" : "game");
+			else say("options: options.ini not copied to %s (error %lu)", g_opts, GetLastError());
+		}
 		if (!g_launcher) {
 			rio_hooks();
 			keyboard_hooks();
 			CreateThread(NULL, 0, ctl_main, NULL, 0, NULL);
+			if (g_cockpit) main_mode();
+			if (g_cockpit) widen_hooks();
+			if (g_cockpit) text_hooks();
+			if (g_cockpit) hud_hooks();
+			{
+				char wb[32];
+				cfg_str("shim", "watch", "", wb, sizeof wb);
+				g_watch = (DWORD)strtoul(wb, NULL, 16);
+				if (g_watch && g_cockpit) CreateThread(NULL, 0, watch_main, NULL, 0, NULL);
+			}
 			if (!strcmp(g_role, "ctcl1") && cfg_int("profiles", "fill_console", 1))
 				CreateThread(NULL, 0, fill_main, NULL, 0, NULL);
 		}

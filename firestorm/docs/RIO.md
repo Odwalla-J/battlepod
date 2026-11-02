@@ -59,6 +59,32 @@ throttle's button, `0x3E` the panic button.
 All three held fire everything. The game also reads joystick button 1, which
 no board message sets; set by hand, it does nothing.
 
+The rest of the pod's own controls, from the Tesla II and System 4
+technical manuals (`Firestorm/MW4-5.07_variants`) and pressed in a mission
+through the shim:
+
+| id | where | in Firestorm |
+|---|---|---|
+| `0x41`-`0x44` | the stick's four-way hat (the joystick board's J7-J10) | looks round while held: `0x42` (forward) down, `0x41` (back) behind, `0x44` left, `0x43` right |
+| `0x45` | the stick's fourth button | nothing |
+| `0x3F` | throttle board J3: the throttle button, unlit | **reverse, while held** (the speed reads negative; a tap does nothing) |
+| `0x3E` | throttle board: the panic button (System 4: also the door switch) | nothing seen in the game |
+| `0x38`-`0x3D` | throttle board, "not connected" / "future use" | nothing |
+
+The manuals call the stick "five buttons and four hat positions", but its
+board has eight inputs, `0x40`-`0x47`. The board numbers each button board's
+eight inputs from its ribbon header: aux monitors 5 and 4 `0x00`, `0x08`; the
+radar ("secondary screen") `0x10`, its two boards `0x10`-`0x17` and
+`0x18`-`0x1F`; aux 1-3 `0x20`-`0x37`; the throttle board `0x38`; the
+joystick board `0x40`. A hex keypad on the upper middle panel (and on System
+4 a second) is for the RIO's diagnostics (code A9E), not the game. The game
+lights lamps `0x1E`, `0x3B` and `0x3D`, where these pods wire no button.
+
+The throttle (`0x568F50`) takes the highest value it has seen as closed and
+counts down from it (800 is full); the record (`0x76B620`) starts over at
+`0x80000000` whenever the RIO's setup runs for a game (`0x567D2D`,
+`0x567EF9`). A difference of exactly 0 means "as before".
+
 ### MFDs
 
 Each aux monitor has four buttons above and four below. With `base` the
@@ -118,4 +144,6 @@ is 112 dots across and 32 high; and rank and score, in boxes at
 (27-42, 19-30) and (42-93, 19-30), 5x7.
 
 The shim answers the port and draws the sign in a window; the bytes also go
-to the control port as `plasma <hex>`, for a real display.
+to the control port as `plasma <hex>`, for a real display. Over a pilot's
+name it adds their rank on the top row (rows 0-6, unused by the game), in
+the same commands, so a real display shows it too ([CAREERS.md](CAREERS.md)).

@@ -142,3 +142,35 @@ also keeps the button board separate from the controller board.
    page change never delays a key press.
 6. Record USB throughput, decode time per update and PSRAM contention in
    Phase 2, and replace the [E] figures here.
+
+## First hardware: Elecrow CrowPanel 7" (measured)
+
+The first module is an off-the-shelf board, not the design above: an Elecrow
+CrowPanel 7.0" (DIS08070H, v3.0) - ESP32-S3-WROOM-1 N4R8, an 800 x 480 RGB
+panel scanned from PSRAM through 10-line bounce buffers, and a CH340 USB-serial
+chip instead of native USB. Firmware: `firestorm/firmware/esp32-mfd`. The
+640 x 480 picture sits 1:1 in the middle of the panel. Touch is not used.
+
+Measured **[M]** on MFD 4 in a mission - the live target view, the heaviest
+display, about 20 updates a second:
+
+| | |
+|---|---|
+| link | UART at 2 Mbaud through the CH340, ~195 KB/s |
+| pictures | 165-180 KB/s; 117-128 KB/s on the wire after DEFLATE |
+| update to `FRAME_ACK` | 33 ms on average, 95 % within 40-50 ms |
+| decode on the module | 0.8-1.3 ms an update, 10-12 ms for a whole frame |
+| updates skipped, `SYNC`s | none in 150 s |
+| packets lost | about one module-to-host packet in 20 s (a `FRAME_ACK`); covered by the next acknowledgement |
+
+Double-buffered (firmware 0.4): decoded into the hidden buffer, shown at
+the next frame, the update copied across - 0 skipped, 0 `SYNC` in 150 s, ack
+33 ms. The panel's refill from PSRAM has 20-line bounce buffers; with 10, a
+whole frame decoded (a page change) or a flash write (naming the board) could
+starve it and roll the picture for a frame.
+
+What it took: the panel's interrupt on core 0 and the UART's on core 1 with
+the decoder, the UART interrupting when its FIFO is half full; and on the
+bridge, cumulative acknowledgements (before them a single lost `FRAME_ACK`
+froze the picture for 3 s). The CH340's 2 Mbaud is this board's limit: about
+1.5x MFD 4's heaviest load. A native-USB module would have five times that.

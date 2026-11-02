@@ -74,12 +74,20 @@ $ox = $con[1]; $oy = $con[2]
 function At([int]$x, [int]$y) { python $desk click ($ox + $x) ($oy + $y) | Out-Null; Start-Sleep -Milliseconds 600 }
 
 python $desk front "BattleTech Firestorm" $ox x | Out-Null
-At 181 118                  # slot 1's player list
-At 90 159                   # the pod's pilot
-At 120 143                  # the name box
-python $desk type $Pilot
-python $desk key enter
-Start-Sleep -Milliseconds 500
+# A pilot seated in the pod (the launcher's Pilots page) is put in slot 1 by
+# the console's shim itself ([profiles] fill_console); wait for it rather
+# than click over it.
+$seats = Join-Path $Game "profiles\assign.ini"
+$seated = (Test-Path $seats) -and (Select-String -Path $seats -Pattern '^\s*name\s*=\s*\S' -Quiet)
+if ($seated -and -not (WaitFor $logs[1] "profiles: the console's slot" 30)) { $seated = $false }
+if (-not $seated) {
+  At 181 118                # slot 1's player list
+  At 90 159                 # the pod's pilot
+  At 120 143                # the name box
+  python $desk type $Pilot
+  python $desk key enter
+  Start-Sleep -Milliseconds 500
+}
 if (-not $NoBot) {
   At 181 168                # slot 2's player list
   At 90 228                 # a bot
@@ -89,6 +97,7 @@ At 672 580                  # LOAD
 "loading the pod..."
 # Loaded, the pod lights its panel.
 if (WaitFor $logs[2] "RIO from game: 84" $LoadWait $lamps) { Start-Sleep -Seconds 2 }
+else { throw "the pod did not load within $LoadWait s: see the console's screen, and shim-ctcl1.log / shim-ctcl2.log" }
 if ($NoLaunch) { "loaded; LAUNCH is on the console"; return }
 At 672 580                  # LAUNCH
 Start-Sleep -Seconds 2

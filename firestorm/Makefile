@@ -5,16 +5,18 @@ CFLAGS  := -O2 -Wall -Wno-unused-parameter
 BUILD   := build
 # Where `make install` copies the DLL: a working copy of the game, never the original.
 GAME    ?= ../firestorm-run/MW4
+# Where `make package` lays out a copy that starts from Firestorm.exe (tools/package.py).
+DEST    ?= $(BUILD)/package
 
 # Windows toolchains inherit a TMP that may not be writable; keep scratch local.
 export TMPDIR := $(CURDIR)/$(BUILD)/tmp
 export TMP    := $(TMPDIR)
 export TEMP   := $(TMPDIR)
 
-all: $(BUILD)/ddraw.dll $(BUILD)/fsrun.exe
+all: $(BUILD)/ddraw.dll $(BUILD)/fsrun.exe $(BUILD)/Firestorm.exe
 
 $(BUILD)/ddraw.dll: src/ddraw.c src/mfdstream.c src/mfdstream.h src/ddraw.def | $(BUILD)/tmp
-	$(CC) $(CFLAGS) -shared -static-libgcc -o $@ src/ddraw.c src/mfdstream.c src/ddraw.def -ldxguid -lgdi32 -luser32 -lws2_32
+	$(CC) $(CFLAGS) -shared -static-libgcc -o $@ src/ddraw.c src/mfdstream.c src/ddraw.def -ldxguid -lgdi32 -luser32 -lws2_32 -lwinmm
 
 # The MFD stream's encoder alone, and the tests that hold it to the Python
 # reference (tools/test_mfdstream.py, which needs only Python).
@@ -26,6 +28,12 @@ test: $(BUILD)/streamtest.exe
 
 $(BUILD)/fsrun.exe: src/fsrun.c | $(BUILD)/tmp
 	$(CC) $(CFLAGS) -static-libgcc -o $@ src/fsrun.c
+
+$(BUILD)/Firestorm.exe: src/firestorm.c | $(BUILD)/tmp
+	$(CC) $(CFLAGS) -mwindows -static-libgcc -o $@ src/firestorm.c
+
+package: all
+	python tools/package.py --game "$(GAME)" --dest "$(DEST)"
 
 $(BUILD)/tmp:
 	mkdir -p $(BUILD)/tmp
@@ -39,4 +47,4 @@ uninstall:
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all install uninstall clean test
+.PHONY: all install uninstall clean test package

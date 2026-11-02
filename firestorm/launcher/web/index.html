@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Firestorm Launcher</title>
+<title>BattleTech Launcher</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,15 +12,23 @@
   <nav class="side">
     <div class="brand">
       <div class="title">BattleTech<br>Firestorm</div>
-      <div class="sub">Launcher V1.0</div>
+      <div class="sub">Launcher V1.1</div>
     </div>
-    <a href="#pc" class="nav on" data-page="pc">This PC</a>
-    <a href="#displays" class="nav" data-page="displays">Displays</a>
-    <a href="#controls" class="nav" data-page="controls">Controls</a>
-    <a href="#performance" class="nav" data-page="performance">Performance</a>
+    <div class="gameswitch" title="Which game this launcher is setting up">
+      <button data-game="fs" class="on">Firestorm</button><button data-game="bt3">3.0</button>
+    </div>
+    <a href="#pc" class="nav on" data-page="pc" data-game="fs">This PC</a>
+    <a href="#displays" class="nav" data-page="displays" data-game="fs">Displays</a>
+    <a href="#mfds" class="nav" data-page="mfds">MFD boards</a>
+    <a href="#controls" class="nav" data-page="controls" data-game="fs">Controls</a>
+    <a href="#performance" class="nav" data-page="performance" data-game="fs">Performance</a>
+    <a href="#bt3" class="nav" data-page="bt3" data-game="bt3">Battle</a>
+    <a href="#bt3display" class="nav" data-page="bt3display" data-game="bt3">Display</a>
+    <a href="#bt3controls" class="nav" data-page="bt3controls" data-game="bt3">Controls</a>
     <a href="#pilots" class="nav" data-page="pilots">Pilots</a>
-    <a href="#console" class="nav" data-page="console">Console</a>
-    <a href="#launch" class="nav" data-page="launch">Launch</a>
+    <a href="#leaderboards" class="nav" data-page="leaderboards">Leaderboards</a>
+    <a href="#console" class="nav" data-page="console" data-game="fs">Console</a>
+    <a href="#launch" class="nav" data-page="launch" data-game="fs">Launch</a>
     <div class="side-foot" id="gamepath"></div>
   </nav>
 
@@ -64,7 +72,7 @@
           <h3>Main view</h3>
           <div class="row"><label>Resolution</label>
             <select id="mode"></select>
-            <span class="hint">The game's own sizes, all 4:3. 1600x1200 needs 16-bit.</span></div>
+            <span class="hint">At a wide size (16:9, 21:9 ...) you see more to the sides, not a stretched view; the HUD is still stretched. "monitor": a monitor's own size. Wider than 2048 is drawn at 2048 and scaled up.</span></div>
           <div class="row"><label>Colour</label>
             <select id="bitdepth"><option value="16">16-bit (recommended)</option><option value="32">32-bit</option></select>
             <span class="hint">At 32-bit and 1600x1200 the MFDs go black.</span></div>
@@ -74,7 +82,8 @@
           <div class="row only-win"><label>Window</label>
             <input id="main_x" class="num" placeholder="x"><input id="main_y" class="num" placeholder="y">
             <input id="main_w" class="num" placeholder="width"><input id="main_h" class="num" placeholder="height"></div>
-          <div class="row"><label></label><label class="check"><input type="checkbox" id="keep_aspect"> Keep the 4:3 shape (black bars on a wide screen)</label></div>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="keep_aspect"> Keep the view's shape (black bars where the window's shape differs)</label></div>
+          <div class="row"><label></label><span class="hint" id="shape_hint"></span></div>
         </div>
 
         <div class="card">
@@ -108,7 +117,7 @@
     <!-- Controls -->
     <section class="page" id="page-controls">
       <h1>Controls</h1>
-      <p class="lead">The pod's stick, throttle, pedals and buttons, from the keyboard and a gamepad. The MFD soft keys are F1-F8 (the selected MFD) and the radar's Ctrl/Shift+F1-F6, or a click on their labels.</p>
+      <p class="lead">The pod's stick, throttle, pedals and buttons, from USB controllers, the keyboard and a gamepad. The MFD soft keys are F1-F8 (the selected MFD) and the radar's Ctrl/Shift+F1-F6, or a click on their labels.</p>
       <div class="grid2">
         <div class="card">
           <h3>Gamepad</h3>
@@ -127,12 +136,23 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>Bindings</h3><button class="btn ghost" id="binds_reset">Reset all to defaults</button></div>
-        <table class="tbl" id="bindtable">
-          <thead><tr><th>Action</th><th>Keys</th><th>Gamepad</th></tr></thead>
+        <h3>USB controllers</h3>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="joy_enabled"> Use USB game controllers - the pod's own throttle, stick and pedals, or a flight stick</label></div>
+        <div id="joy_devs" class="joydevs"></div>
+        <table class="tbl" id="joytable">
+          <thead><tr><th>Control</th><th>Controller input</th><th>Now</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
-        <p class="hint">Click <b>+</b> and press a key to add it (up to four); click a key to remove it.</p>
+        <div class="row"><label>Dead zone</label><input type="range" id="joy_deadzone" min="0" max="20" step="1"><span class="hint" id="joy_deadzone_v"></span></div>
+        <p class="hint">Click <b>Learn</b> and move the control as it says; or type an input: a controller's USB ids (as listed above), part of its name, or #number, then the axis - <span class="mono">2E8A:1001.X</span>, a "-" in front to reverse it. Buttons and the hat are bound in the table below.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Bindings</h3><button class="btn ghost" id="binds_reset">Reset all to defaults</button></div>
+        <table class="tbl" id="bindtable">
+          <thead><tr><th>Action</th><th>Keys</th><th>Gamepad</th><th>USB controller</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint">Click <b>+</b> and press a key to add it (up to four), or under USB controller press the controller's button or push its hat; click a key or input to remove it.</p>
       </div>
     </section>
 
@@ -169,6 +189,7 @@
         <div class="card editor">
           <h3 id="ed-title">New pilot</h3>
           <div class="portrait" id="ed-portrait"><div class="tag" id="ed-tag"></div></div>
+          <div class="career" id="ed-career" hidden></div>
           <div class="spec" id="ed-spec"></div>
           <div class="row"><label>Name</label><input id="ed-name" maxlength="15" placeholder="Callsign"></div>
           <div class="row"><label>'Mech</label><select id="ed-chassis"></select></div>
@@ -186,6 +207,185 @@
     </section>
 
     <!-- Console -->
+    <section class="page" id="page-mfds">
+      <h1>MFD boards</h1>
+      <p class="lead">The cockpit's MFD screens: display boards on USB (an Elecrow CrowPanel 7" with <span class="mono">firmware/esp32-mfd</span>). Tell each which MFD it is - it remembers - and check them with a test picture that loops.</p>
+      <div class="card">
+        <div class="card-head"><h3>Boards</h3><div><button class="btn ghost" id="mfd_scan">Find boards</button> <button class="btn" id="mfd_test">Show test pictures</button></div></div>
+        <table class="tbl" id="mfdtable">
+          <thead><tr><th>Port</th><th>Board</th><th>Firmware</th><th>Is MFD</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="hint" id="mfd_hint">Finding boards briefly opens every serial port.</p>
+        <p class="hint">BattleTech 3.0: any board found and given an MFD here shows the 3.0 cockpit's panel during a battle - its key labels lit as the game lights them, the message line, engine status and weapon readout - drawn by the bridge, which the battle starts with it.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Bridge</h3><div><button class="btn" id="mfd_bridge">Start the bridge</button></div></div>
+        <p class="hint" id="mfd_bridge_state"></p>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="mfd_bridge_auto"> Start the bridge with the pod</label></div>
+        <pre id="mfd_bridge_log" class="hint"></pre>
+        <p class="hint">The bridge carries the game's MFD pictures to the boards while the pod runs: it opens the ports of the boards given an MFD above, and takes the pictures from the game when <i>The game streams its MFD pictures</i> is ticked. Finding boards, test pictures and recording stop it, as they need the same ports; Stop on the launch page stops it too. Its log is <span class="mono">bridge.log</span> beside the game.</p>
+      </div>
+      <div class="card">
+        <h3>Test pictures</h3>
+        <p class="hint" id="mfd_rec_state"></p>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="mfd_stream"> The game streams its MFD pictures (to the boards, through the bridge)</label></div>
+        <div class="row"><label></label><button class="btn ghost" id="mfd_record">Record from the game (4 s)</button> <button class="btn ghost" id="mfd_forget">Delete recordings</button></div>
+        <p class="hint">Each board loops its MFD's page, drawn here - its keys' labels, its title, something moving - or, once recorded, four seconds of the game's own picture: start a mission with the streaming box ticked (and the bridge stopped), then Record. Recordings stay beside the game, in <span class="mono">profiles\mfd-test</span>.</p>
+      </div>
+    </section>
+
+    <section class="page" id="page-leaderboards">
+      <h1>Leaderboards</h1>
+      <p class="lead">Every pilot's career, from the match records the pods write - score, kills and deaths as the battle report has them - and from BattleTech 3.0's battles (500 a kill). A pod sends each finished match to the console's launcher; ranks come from experience over a whole career, both games.</p>
+      <div class="banner" id="lb-error" hidden></div>
+      <div class="best" id="lb-best"></div>
+      <div class="card">
+        <div class="card-head"><h3>Standings</h3><div class="lb-pick">
+          <select id="lb-game"><option value="">Both games</option><option value="fs">Firestorm</option><option value="bt3">BattleTech 3.0</option></select>
+          <select id="lb-since"><option value="">All time</option><option value="month">This month</option><option value="week">Last 7 days</option><option value="today">Today</option></select>
+          <select id="lb-sort"><option value="xp">By rank</option><option value="score">By total score</option><option value="kills">By kills</option><option value="kd">By kills per death</option><option value="wins">By wins</option><option value="best">By best match</option><option value="avg">By average score</option><option value="matches">By matches flown</option></select>
+        </div></div>
+        <div class="tbl-wrap"><table class="tbl lb" id="lb-table">
+          <thead><tr><th>#</th><th>Pilot</th><th>Rank</th><th class="n">Matches</th><th class="n">Wins</th><th class="n">Kills</th><th class="n">Deaths</th><th class="n">K/D</th><th class="n">Score</th><th class="n">Best</th><th class="n">Average</th><th>Favourite 'Mech</th><th>Last flown</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </div>
+      <div class="lb-cols">
+        <div class="card">
+          <h3>Recent matches</h3>
+          <div class="tbl-wrap"><table class="tbl" id="lb-recent">
+            <thead><tr><th>When</th><th>Pilot</th><th>Mission</th><th>'Mech</th><th class="n">Score</th><th class="n">K / D</th><th class="n">Place</th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <h3>Ranks</h3>
+          <div id="lb-ranks"></div>
+          <p class="hint">Experience: a match's score (never less than 0), plus 250 for flying it and 500 for finishing first. From Sergeant up a pilot is a veteran, and the pod's plasma sign shows every ranked pilot's rank above their name.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- BattleTech 3.0 -->
+    <section class="page" id="page-bt3">
+      <h1>BattleTech 3.0</h1>
+      <p class="lead">The 1990s pod - VWE release 13.1.8 - its own 68020 firmware running on battlepod's emulator. Pick a 'Mech and a map, add CPU pilots, and drop in. Every CPU pilot is a whole emulated pod of its own.</p>
+      <div class="banner" id="bt3-error" hidden></div>
+      <div class="bt3-setup">
+        <div class="card">
+          <h3>Your 'Mech</h3>
+          <div class="portrait bt3-portrait" id="bt3-portrait"><div class="tag" id="bt3-tag"></div></div>
+          <div class="row"><label>Pilot</label><input id="bt3-pilot" maxlength="8" placeholder="Callsign"><select id="bt3-roster"><option value="">From the roster...</option></select></div>
+          <div class="row"><label>'Mech</label><select id="bt3-vehicle"></select></div>
+          <p class="hint">The pod's name plate takes eight characters.</p>
+        </div>
+        <div class="card">
+          <h3>The battle</h3>
+          <div class="row"><label>Map</label><select id="bt3-scenario"></select></div>
+          <div class="row"><label>Time of day</label><select id="bt3-env"></select></div>
+          <div class="row"><label>Other PCs</label><select id="bt3-remote"><option value="0">None - only this PC's cockpit</option><option value="1">1 person on another PC</option><option value="2">2 people on other PCs</option><option value="3">3 people on other PCs</option></select></div>
+          <div class="row top" id="bt3-remote-row"><label>Their seats</label><div id="bt3-seats" class="bt3-opps"></div></div>
+          <div class="row"><label>CPU pilots</label><select id="bt3-bots"></select></div>
+          <div class="row top"><label>Their 'Mechs</label><div id="bt3-opponents" class="bt3-opps"></div></div>
+          <div class="row"><label>Start</label><select id="bt3-arena"><option value="1">On open ground, in a ring, facing in</option><option value="0">At the map's drop points</option></select></div>
+          <div class="row"><label>Destroyed</label><select id="bt3-respawn"><option value="10">Drop in again after 10 seconds</option><option value="20">Drop in again after 20 seconds</option><option value="0">Out of the battle</option></select></div>
+          <div class="row"><label>Time limit</label><select id="bt3-minutes"><option value="0">None - until the cockpit is closed</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="20">20 minutes</option></select></div>
+          <div class="launchers bt3-go">
+            <button class="big" id="bt3-start">Drop in</button>
+            <button class="big ghost" id="bt3-stop">Stop</button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>The centre</h3><span class="hint" id="bt3-clock"></span></div>
+        <div class="opview">
+          <canvas id="bt3-map" width="620" height="620"></canvas>
+          <div>
+            <table class="tbl" id="bt3-score"><thead><tr><th>Pilot</th><th>'Mech</th><th>State</th><th class="n">Kills</th><th class="n">Deaths</th><th class="n">Hits taken</th></tr></thead><tbody></tbody></table>
+            <div id="bt3-events" class="bt3-events"></div>
+            <p class="hint">The operator's view: the map from above, north up, every Mech where its pod says it is. Read from the centre as it runs.</p>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Join a battle on another PC</h3>
+        <p class="hint">When another PC's launcher runs the battle with seats for other PCs, this PC's cockpit takes one: its address (that launcher's This PC page) and the seat it gave you. That PC's operator chooses your name and 'Mech, as the arcade's did. Its firewall has to let the battle in - Windows asks the first time.</p>
+        <div class="row"><label>Battle on</label><input id="bt3-join-host" class="wide" placeholder="e.g. 192.168.1.132"><label>Seat</label><select id="bt3-join-seat"></select>
+          <button class="btn primary" id="bt3-join">Join</button></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h3>The release</h3>
+          <div id="bt3-checks"></div>
+          <div class="row"><label>Game Files</label><input id="bt3-files" class="wide" placeholder="...\BattleTech 13.1.8\Console Files\Game Files"><button class="btn" id="bt3-files-save">Use this folder</button></div>
+          <p class="hint">VWE Release 13.1.8 (the Internet Archive's <i>vwe-release-13.1.8</i>), extracted: its <span class="mono">Console Files\Game Files</span> folder, with <span class="mono">Full_Load_3_0</span> and <span class="mono">Scenarios</span> in it. Nothing is copied out of it.</p>
+        </div>
+        <div class="card"><h3>Log</h3><pre id="bt3-log"></pre></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-bt3display">
+      <h1>Display</h1>
+      <p class="lead">The 3.0 cockpit's main view: the pod's own 480 x 360 picture, scaled to its window and kept at its shape. Saved as you change it; the next battle uses it.</p>
+      <div class="card">
+        <h3>Main view</h3>
+        <div class="row"><label>Size</label><select id="bt3d-size"><option value="960">960 wide (double)</option><option value="1280">1280 wide</option><option value="1440">1440 wide</option><option value="1920">1920 wide</option><option value="custom">Other...</option></select>
+          <span id="bt3d-custom"><input id="bt3d-w" class="num"> x <input id="bt3d-h" class="num"></span></div>
+        <div class="row"><label>Place</label><input id="bt3d-x" class="num" placeholder="auto"> , <input id="bt3d-y" class="num" placeholder="auto"><span class="hint">The window's top left on the desktop; empty for wherever Windows puts it.</span></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-full"> Full screen, borderless, on</label><select id="bt3d-mon"></select></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-smooth"> Smooth scaling (off: the pod's pixels, square and sharp)</label></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-strip"> The panel under the picture: message line, engine, throttle, the weapons - recycling, ammunition, trigger groups - and a radar</label></div>
+      </div>
+      <div class="card">
+        <h3>The cockpit's panel</h3>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-panels"> Show the panel's lamps, displays and bar graphs, each in a window</label></div>
+        <p class="hint">The pod's Remote I/O as it is sent: every lamp, the weapon and engine readouts, the bar graphs - by their wire numbers, for now, not laid out as the cockpit's panels were. Handy to see weapons recycle; off for a clean screen.</p>
+      </div>
+    </section>
+
+    <section class="page" id="page-bt3controls">
+      <h1>Controls</h1>
+      <p class="lead">The 3.0 pod's controls on this PC: the keyboard, a gamepad, and USB controllers - the same throttle and stick boards Firestorm uses. The cockpit window must have focus.</p>
+      <div class="grid2">
+        <div class="card">
+          <h3>Keyboard</h3>
+          <table class="tbl keys3"><tbody>
+            <tr><td><span class="key">W</span> <span class="key">S</span></td><td>Throttle up and down, in eighths; <span class="key">X</span> closes it</td></tr>
+            <tr><td><span class="key">A</span> <span class="key">D</span></td><td>Turn (the stick, in "stick turns" mode, chosen with the first turn)</td></tr>
+            <tr><td><span class="key">Space</span></td><td>Fire trigger group 1</td></tr>
+            <tr><td><span class="key">F</span> <span class="key">G</span></td><td>Fire groups 2 and 3; <span class="key">Enter</span> all three</td></tr>
+            <tr><td><span class="key">Q</span> <span class="key">E</span></td><td>Twist the torso left and right; <span class="key">C</span> centres it</td></tr>
+            <tr><td><span class="key">R</span> <span class="key">V</span></td><td>Look up and down</td></tr>
+            <tr><td><span class="key">Z</span> <span class="key">-</span></td><td>Zoom in and out</td></tr>
+            <tr><td><span class="key">T</span></td><td>Target select</td></tr>
+            <tr><td><span class="key">L</span></td><td>Searchlight</td></tr>
+            <tr><td><span class="key">F1</span> <span class="key">F2</span> <span class="key">F3</span></td><td>Radar, map, damage display</td></tr>
+            <tr><td><span class="key">Esc</span></td><td>Leave: closes the cockpit and ends the battle</td></tr>
+          </tbody></table>
+        </div>
+        <div class="card">
+          <h3>Gamepad</h3>
+          <table class="tbl keys3"><tbody>
+            <tr><td>Left stick, up and down</td><td>Throttle lever: push to open, pull to close</td></tr>
+            <tr><td>Either stick, left and right</td><td>Turn</td></tr>
+            <tr><td>D-pad up / down</td><td>Throttle full open / closed</td></tr>
+            <tr><td>Right trigger</td><td>Fire group 1</td></tr>
+            <tr><td>A</td><td>Target select</td></tr>
+            <tr><td>Y</td><td>Searchlight</td></tr>
+          </tbody></table>
+          <p class="hint">Any pad Windows knows as an Xbox-style controller.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>USB controllers</h3><label class="check"><input type="checkbox" id="bt3j-on"> Use them</label></div>
+        <table class="tbl" id="bt3j-table"><thead><tr><th>Control</th><th>Bound to</th><th>Now</th><th></th></tr></thead><tbody></tbody></table>
+        <div class="row"><label>Dead zone</label><input id="bt3j-dead" class="num"> %</div>
+        <div id="bt3j-devs" class="hint"></div>
+        <p class="hint">Learn, then move the axis or press the button. A controller is remembered by its name, so it is found again in any USB port. The defaults are the Firestorm cockpit's own boards (firmware/rp2040-controls).</p>
+      </div>
+    </section>
+
     <section class="page" id="page-console">
       <h1>Console</h1>
       <p class="lead">For the console PC: the pods it runs, by network address, and the battle reports. Pods are listed in <span class="mono">ctcl.ini</span>; each gets a slot on the console's screen.</p>
@@ -221,7 +421,7 @@
       </div>
       <div class="grid2">
         <div class="card"><h3>Running</h3><div id="procs"></div></div>
-        <div class="card"><h3>Log</h3><select id="logrole"><option value="ctcl2">Pod</option><option value="ctcl1">Console</option><option value="launcher">Pod launcher</option><option value="mw4print">Report printer</option></select><pre id="log"></pre></div>
+        <div class="card"><h3>Log</h3><select id="logrole"><option value="ctcl2">Pod</option><option value="ctcl1">Console</option><option value="launcher">Pod launcher</option><option value="mw4print">Report printer</option><option value="bridge">MFD bridge</option></select><pre id="log"></pre></div>
       </div>
     </section>
   </main>
@@ -232,5 +432,6 @@
   <div class="bar-btns"><button class="btn ghost" id="revert">Revert</button><button class="btn primary" id="save">Save</button></div>
 </footer>
 <script src="app.js"></script>
+<script src="bt3.js"></script>
 </body>
 </html>

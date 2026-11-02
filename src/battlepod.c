@@ -1593,10 +1593,401 @@ static long g_frames_n;
 static int g_view_w = 480, g_view_h = 360;
 static int g_quit;
 
+/* ---- the cockpit's settings
+ *
+ * battletech.ini, named by the environment's BATTLEPOD_INI - the launcher
+ * writes it and every pod it starts inherits the name. Without it (or off
+ * Windows) the cockpit is as it always was: windows where the system puts
+ * them, the keyboard and a gamepad.
+ *
+ *   [view]      x, y, w, h        the main view's window (default 960x720)
+ *               fullscreen = 1    borderless over the whole monitor x, y is on (or
+ *                                 monitor = n, from 1, without them)
+ *               smooth = 1        scale the 480x360 picture smoothly, not in blocks
+ *               title             the window's name
+ *               strip = 1         the panel's state in a strip under the picture:
+ *                                 message line, engine, throttle, the weapons
+ *   [panels]    show = 0          no lamp, display and bar-graph windows
+ *   [lamps], [displays], [bargraphs]   x, y, w, h of each of those
+ *   [joy]       a USB controller's axes and buttons (below)
+ */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <mmsystem.h>
+static char g_ini[MAX_PATH];
+
+static int ini_int(const char *sec, const char *key, int def)
+{
+	return g_ini[0] ? (int)GetPrivateProfileIntA(sec, key, def, g_ini) : def;
+}
+
+static void ini_str(const char *sec, const char *key, const char *def, char *out, int n)
+{
+	if (g_ini[0]) GetPrivateProfileStringA(sec, key, def, out, (DWORD)n, g_ini);
+	else snprintf(out, (size_t)n, "%s", def);
+}
+#else
+static int ini_int(const char *sec, const char *key, int def) { (void)sec; (void)key; return def; }
+static void ini_str(const char *sec, const char *key, const char *def, char *out, int n)
+{
+	(void)sec; (void)key;
+	snprintf(out, (size_t)n, "%s", def);
+}
+#endif
+
+static void ini_open(void)
+{
+#ifdef _WIN32
+	const char *p = getenv("BATTLEPOD_INI");
+	if (p && *p && GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) {
+		snprintf(g_ini, sizeof g_ini, "%s", p);
+		printf("settings: %s\n", g_ini);
+	}
+#endif
+}
+
+/* A window's place from [sec] x, y, w, h; what is not given stays as it was. */
+static void ini_rect(const char *sec, int *x, int *y, int *w, int *h)
+{
+	*x = ini_int(sec, "x", *x);
+	*y = ini_int(sec, "y", *y);
+	*w = ini_int(sec, "w", *w);
+	*h = ini_int(sec, "h", *h);
+	if (*w < 64) *w = 64;
+	if (*h < 48) *h = 48;
+}
+
+/* ---- a USB controller (Windows): a throttle lever, a stick, buttons
+ *
+ * Read through winmm's joystick API, as the launcher's Controls page reads
+ * them, so what it learns is what this uses. In [joy] a controller is named
+ * by its USB ids ("2E8A:1001"), part of its name ("Throttle") or number
+ * ("#0"); an axis is X Y Z R U or V, "-" in front to reverse it; a button is
+ * Bn (from 1) or HatUp, HatDown, HatLeft, HatRight:
+ *
+ *   throttle = Firestorm Throttle.X    the lever: closed at the low end (A0)
+ *   stick_x = Firestorm Stick.X        the stick, centred: steers (A1/A2)
+ *   fire1, fire2, fire3, fire_all, target, light, twist_left, twist_right,
+ *   centre, view_up, view_down, zoom_in, zoom_out = CONTROLLER.Bn
+ *   deadzone = 4 (percent), enabled = 0 for none
+ *
+ * The defaults are the cockpit boards of firmware/rp2040-controls. */
+#ifdef _WIN32
+#define JMAX 16
+struct jref { char dev[48]; int what, neg, idx; };
+static struct jdev {
+	int ok;
+	WORD vid, pid;
+	char name[64];
+	DWORD lo[6], hi[6];
+	JOYINFOEX st;
+} g_jd[JMAX];
+enum { J_THROTTLE, J_STICK_X, J_AXES };
+static const char *const J_AXIS_KEY[J_AXES][2] = {
+	{ "throttle", "Firestorm Throttle.X" }, { "stick_x", "Firestorm Stick.X" },
+};
+static const struct { const char *key, *def; uint8_t id1, id2, id3; } J_BTN[] = {
+	{ "fire1", "Firestorm Stick.B1", 0xA5, 0, 0 },
+	{ "fire2", "Firestorm Stick.B2", 0xA6, 0, 0 },
+	{ "fire3", "Firestorm Stick.B3", 0xA7, 0, 0 },
+	{ "fire_all", "", 0xA5, 0xA6, 0xA7 },
+	{ "target", "Firestorm Stick.B4", 0x40, 0, 0 },
+	{ "light", "Firestorm Throttle.B2", 0x20, 0, 0 },
+	{ "twist_left", "Firestorm Stick.HatLeft", 0x51, 0, 0 },
+	{ "twist_right", "Firestorm Stick.HatRight", 0x1C, 0, 0 },
+	{ "centre", "Firestorm Throttle.B1", 0x28, 0, 0 },
+	{ "view_up", "Firestorm Stick.HatUp", 0x24, 0, 0 },
+	{ "view_down", "Firestorm Stick.HatDown", 0x2C, 0, 0 },
+	{ "zoom_in", "", 0x3D, 0, 0 },
+	{ "zoom_out", "", 0x43, 0, 0 },
+};
+#define J_NBTN ((int)(sizeof J_BTN / sizeof *J_BTN))
+static struct jref g_jaxis[J_AXES], g_jbtn[J_NBTN];
+static int g_jheld[J_NBTN];
+static int g_joy_on = -1, g_joy_dead;
+
+static void jref_parse(struct jref *r, const char *s)
+{
+	static const char *hats[] = { "hatup", "hatdown", "hatleft", "hatright" };
+	const char *dot;
+	int i;
+
+	memset(r, 0, sizeof *r);
+	r->idx = -1;
+	while (*s == ' ') s++;
+	if (*s == '-') { r->neg = 1; s++; }
+	if (!*s || !_stricmp(s, "none") || !(dot = strrchr(s, '.'))) return;
+	snprintf(r->dev, sizeof r->dev, "%.*s", (int)(dot - s), s);
+	dot++;
+	if (dot[0] && !dot[1] && strchr("XYZRUVxyzruv", dot[0]))
+		r->what = (int)(strchr("XYZRUV", toupper((unsigned char)dot[0])) - "XYZRUV");
+	else if ((dot[0] == 'B' || dot[0] == 'b') && atoi(dot + 1) >= 1 && atoi(dot + 1) <= 32)
+		r->what = 100 + atoi(dot + 1);
+	else {
+		for (i = 0; i < 4; i++) if (!_stricmp(dot, hats[i])) r->what = 201 + i;
+		if (!r->what) r->dev[0] = 0;
+	}
+}
+
+static int jdev_find(const char *dev)
+{
+	unsigned v, p;
+	int i, k;
+
+	if (!dev[0]) return -1;
+	if (dev[0] == '#') return (i = atoi(dev + 1)) >= 0 && i < JMAX && g_jd[i].ok ? i : -1;
+	if (sscanf(dev, "%x:%x", &v, &p) == 2 && strlen(dev) == 9) {
+		for (i = 0; i < JMAX; i++) if (g_jd[i].ok && g_jd[i].vid == v && g_jd[i].pid == p) return i;
+		return -1;
+	}
+	for (i = 0; i < JMAX; i++) {
+		char a[64], b[48];
+		if (!g_jd[i].ok) continue;
+		for (k = 0; g_jd[i].name[k] && k < 63; k++) a[k] = (char)tolower((unsigned char)g_jd[i].name[k]);
+		a[k] = 0;
+		for (k = 0; dev[k] && k < 47; k++) b[k] = (char)tolower((unsigned char)dev[k]);
+		b[k] = 0;
+		if (strstr(a, b)) return i;
+	}
+	return -1;
+}
+
+static void jdev_name(struct jdev *d, int id)
+{
+	static const char *base = "System\\CurrentControlSet\\Control\\MediaProperties\\PrivateProperties\\Joystick\\OEM\\";
+	char key[200];
+	DWORD n = sizeof d->name;
+	HKEY h;
+
+	snprintf(d->name, sizeof d->name, "controller %d", id);
+	snprintf(key, sizeof key, "%sVID_%04X&PID_%04X", base, d->vid, d->pid);
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, key, 0, KEY_READ, &h) == ERROR_SUCCESS ||
+	    RegOpenKeyExA(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &h) == ERROR_SUCCESS) {
+		if (RegQueryValueExA(h, "OEMName", NULL, NULL, (BYTE *)d->name, &n) != ERROR_SUCCESS)
+			snprintf(d->name, sizeof d->name, "controller %d", id);
+		RegCloseKey(h);
+	}
+}
+
+static void joy_scan(void)
+{
+	UINT n = joyGetNumDevs(), id;
+	int a;
+
+	for (id = 0; id < JMAX; id++) {
+		struct jdev *d = &g_jd[id];
+		JOYCAPSA c;
+		JOYINFOEX st;
+		int was = d->ok;
+
+		memset(&st, 0, sizeof st);
+		st.dwSize = sizeof st;
+		st.dwFlags = JOY_RETURNALL;
+		d->ok = id < n && joyGetDevCapsA(id, &c, sizeof c) == JOYERR_NOERROR &&
+			joyGetPosEx(id, &st) == JOYERR_NOERROR;
+		if (!d->ok) continue;
+		if (!was || d->vid != c.wMid || d->pid != c.wPid) {
+			d->vid = c.wMid;
+			d->pid = c.wPid;
+			jdev_name(d, (int)id);
+			printf("joystick %u: %04X:%04X \"%s\"\n", id, d->vid, d->pid, d->name);
+		}
+		d->lo[0] = c.wXmin; d->hi[0] = c.wXmax; d->lo[1] = c.wYmin; d->hi[1] = c.wYmax;
+		d->lo[2] = c.wZmin; d->hi[2] = c.wZmax; d->lo[3] = c.wRmin; d->hi[3] = c.wRmax;
+		d->lo[4] = c.wUmin; d->hi[4] = c.wUmax; d->lo[5] = c.wVmin; d->hi[5] = c.wVmax;
+	}
+	for (a = 0; a < J_AXES; a++) g_jaxis[a].idx = jdev_find(g_jaxis[a].dev);
+	for (a = 0; a < J_NBTN; a++) g_jbtn[a].idx = jdev_find(g_jbtn[a].dev);
+}
+
+/* An axis from 0 (its low end) to 1000; -1 if it is not there. */
+static int joy_axis(const struct jref *r)
+{
+	const struct jdev *d;
+	DWORD v, lo, hi;
+	int x;
+
+	if (r->idx < 0 || r->what > 5 || !(d = &g_jd[r->idx])->ok) return -1;
+	v = (&d->st.dwXpos)[r->what];
+	lo = d->lo[r->what];
+	hi = d->hi[r->what];
+	if (hi <= lo) return -1;
+	x = v <= lo ? 0 : v >= hi ? 1000 : (int)((v - lo) * 1000.0 / (hi - lo));
+	return r->neg ? 1000 - x : x;
+}
+
+static int joy_held(const struct jref *r)
+{
+	const struct jdev *d;
+	DWORD pov;
+
+	if (r->idx < 0 || !(d = &g_jd[r->idx])->ok) return 0;
+	if (r->what > 100 && r->what <= 132) return (d->st.dwButtons >> (r->what - 101)) & 1;
+	pov = d->st.dwPOV;
+	if (r->what < 201 || pov > 35900) return 0;
+	switch (r->what) {
+	case 201: return pov >= 31500 || pov <= 4500;
+	case 202: return pov >= 13500 && pov <= 22500;
+	case 203: return pov >= 22500 && pov <= 31500;
+	default:  return pov >= 4500 && pov <= 13500;
+	}
+}
+#endif
+
+/* [view] strip: the cockpit's panel in a band under the main view, for a PC
+ * with no panel - the message line (8C-8E) and the readout (8F), the engine
+ * status (90), the throttle as the keys or lever have it, and the first six
+ * weapons: each one's display (80+k), its recycle bar, its count, and which
+ * of the three trigger groups fire it (lamps 4k+1..4k+3, bright when in) -
+ * and, on a network, a radar (below). */
+#define STRIP_H 84
+static int g_strip;
+
+/* A radar for the strip. The pod's own radar was the secondary display's,
+ * which is not here; but every pod broadcasts where its Mech is (0xEC:
+ * thing at +0x08, then x, y, z, heading as floats), and those pass through
+ * this cockpit's network link - its own going out, the others' coming in.
+ * The strip draws them round this Mech, its heading up. */
+#define RADAR_MAX 16
+#define RADAR_RANGE 500.0f		/* metres to the edge: the centre's visibility range */
+static struct blip { uint32_t thing; float x, y, h; Uint32 seen; } g_blips[RADAR_MAX], g_me;
+
+static float be_float(const uint8_t *b)
+{
+	uint32_t u = ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+	float f;
+	memcpy(&f, &u, 4);
+	return f;
+}
+
+static void radar_note(const uint8_t *p, uint32_t n, int mine)
+{
+	struct blip b;
+	int i, free_at = -1;
+
+	if (n < 0x24 || p[0] != 0xEC) return;
+	b.thing = ((uint32_t)p[8] << 24) | ((uint32_t)p[9] << 16) | ((uint32_t)p[10] << 8) | p[11];
+	b.x = be_float(p + 0x0C);
+	b.y = be_float(p + 0x10);
+	b.h = be_float(p + 0x18);
+	b.seen = SDL_GetTicks();
+	if (mine) { g_me = b; return; }
+	for (i = 0; i < RADAR_MAX; i++) {
+		if (g_blips[i].seen && g_blips[i].thing == b.thing) { g_blips[i] = b; return; }
+		if (free_at < 0 && (!g_blips[i].seen || b.seen - g_blips[i].seen > 5000)) free_at = i;
+	}
+	if (free_at >= 0) g_blips[free_at] = b;
+}
+
+static void draw_radar(SDL_Renderer *r, int cx, int cy, int rad)
+{
+	Uint32 now = SDL_GetTicks();
+	float h = g_me.h * 3.14159265f / 180.0f, s = rad / RADAR_RANGE;
+	int i, k;
+
+	SDL_SetRenderDrawColor(r, 18, 40, 22, 255);
+	for (k = 0; k < 2; k++) {			/* the range rings */
+		SDL_Point pts[49];
+		for (i = 0; i <= 48; i++) {
+			float a = i * 6.2831853f / 48;
+			pts[i].x = cx + (int)(rad * (k ? 0.5f : 1.0f) * cosf(a));
+			pts[i].y = cy + (int)(rad * (k ? 0.5f : 1.0f) * sinf(a));
+		}
+		SDL_RenderDrawLines(r, pts, 49);
+	}
+	SDL_RenderDrawLine(r, cx - rad, cy, cx + rad, cy);
+	SDL_RenderDrawLine(r, cx, cy - rad, cx, cy + rad);
+	SDL_SetRenderDrawColor(r, 90, 255, 130, 255);	/* this Mech, heading up */
+	SDL_RenderDrawLine(r, cx, cy - 4, cx - 3, cy + 3);
+	SDL_RenderDrawLine(r, cx, cy - 4, cx + 3, cy + 3);
+	if (!g_me.seen) return;
+	for (i = 0; i < RADAR_MAX; i++) {
+		const struct blip *b = &g_blips[i];
+		float dx, dy, fwd, right, dist;
+		SDL_Rect dot;
+		if (!b->seen || now - b->seen > 3000 || b->thing == g_me.thing) continue;
+		/* Heading h walks along (sin h, -cos h); right of it is (cos h, sin h). */
+		dx = b->x - g_me.x;
+		dy = b->y - g_me.y;
+		fwd = dx * sinf(h) - dy * cosf(h);
+		right = dx * cosf(h) + dy * sinf(h);
+		dist = sqrtf(fwd * fwd + right * right);
+		if (dist > RADAR_RANGE) { fwd *= RADAR_RANGE / dist; right *= RADAR_RANGE / dist; }
+		dot.x = cx + (int)(right * s) - 2;
+		dot.y = cy - (int)(fwd * s) - 2;
+		dot.w = dot.h = 5;
+		if (dist > RADAR_RANGE) SDL_SetRenderDrawColor(r, 140, 50, 30, 255);
+		else SDL_SetRenderDrawColor(r, 255, 70, 40, 255);
+		SDL_RenderFillRect(r, &dot);
+	}
+}
+static int g_live_throttle;		/* the keys' or the lever's throttle (below) */
+
+static void draw_strip(SDL_Renderer *r, const struct rio_panel *p, int y0, int w)
+{
+	SDL_Rect band = { 0, y0, w, STRIP_H }, line = { 0, y0, w, 1 };
+	char msg[25];
+	int k, i;
+
+	SDL_SetRenderDrawColor(r, 8, 9, 8, 255);
+	SDL_RenderFillRect(r, &band);
+	SDL_SetRenderDrawColor(r, 70, 72, 66, 255);
+	SDL_RenderFillRect(r, &line);
+
+	for (i = 0; i < 3; i++)
+		snprintf(msg + i * 8, 9, "%-8.8s", p->text_set[0x8C + i] ? p->text[0x8C + i] : "");
+	for (i = 0; i < 24; i++) if ((unsigned char)msg[i] < 0x20) msg[i] = ' ';
+	SDL_SetRenderDrawColor(r, 255, 176, 60, 255);
+	text(r, 6, y0 + 6, 1, msg, 24);
+	if (p->field_set[0x8F]) text(r, 262, y0 + 6, 1, p->field[0x8F], 2);
+	SDL_SetRenderDrawColor(r, 90, 255, 130, 255);
+	if (p->text_set[0x90]) text(r, 300, y0 + 6, 1, p->text[0x90], 8);
+	draw_radar(r, w - 42, y0 + 42, 38);
+
+	{	/* the throttle */
+		SDL_Rect frame = { 30, y0 + 19, 200, 7 }, fill = { 31, y0 + 20, 198 * g_live_throttle / 0x340, 5 };
+		SDL_SetRenderDrawColor(r, 150, 152, 146, 255);
+		text(r, 6, y0 + 19, 1, "THR", 3);
+		SDL_RenderDrawRect(r, &frame);
+		SDL_SetRenderDrawColor(r, 255, 106, 26, 255);
+		SDL_RenderFillRect(r, &fill);
+	}
+
+	for (k = 0; k < 6; k++) {
+		int x = 6 + k * 66, y = y0 + 36, seg, g, bars;
+		if (!p->text_set[0x80 + k] || strspn(p->text[0x80 + k], " ") >= strlen(p->text[0x80 + k])) continue;
+		SDL_SetRenderDrawColor(r, 235, 236, 230, 255);
+		text(r, x, y, 1, p->text[0x80 + k], p->field_set[0x80 + k] ? 7 : 8);
+		bars = p->bar_set[0x80 + k] ? p->bar[0x80 + k] : 0;
+		if (bars > 8) bars = 8;
+		for (seg = 0; seg < 8; seg++) {
+			SDL_Rect s = { x + seg * 7, y + 12, 6, 6 };
+			if (seg < bars) SDL_SetRenderDrawColor(r, 70, 220, 255, 255);
+			else SDL_SetRenderDrawColor(r, 34, 36, 40, 255);
+			SDL_RenderFillRect(r, &s);
+		}
+		if (p->field_set[0x80 + k]) {
+			SDL_SetRenderDrawColor(r, 255, 176, 60, 255);
+			text(r, x + 50, y, 1, p->field[0x80 + k], 2);
+		}
+		for (g = 1; g <= 3; g++) {
+			int id = 4 * k + g, lit = p->lamp_set[id] && p->lamp[id] >= 2;
+			SDL_Rect s = { x + (g - 1) * 14, y + 24, 12, 8 };
+			if (lit) SDL_SetRenderDrawColor(r, 255, 106, 26, 255);
+			else SDL_SetRenderDrawColor(r, 40, 30, 26, 255);
+			SDL_RenderFillRect(r, &s);
+			SDL_SetRenderDrawColor(r, lit ? 0 : 120, lit ? 0 : 100, lit ? 0 : 90, 255);
+			{ char n[2] = { (char)('0' + g), 0 }; text(r, x + (g - 1) * 14 + 4, y + 25, 1, n, 1); }
+		}
+	}
+}
+
 static int live_open(const char *frames)
 {
 	int i;
 
+	ini_open();
 	if (SDL_Init(SDL_INIT_VIDEO) != 0) {
 		fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
 		return 0;
@@ -1604,10 +1995,12 @@ static int live_open(const char *frames)
 	/* A gamepad is a convenience, not a need: no controller support, no pad. */
 	if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0)
 		fprintf(stderr, "no gamepad support: %s\n", SDL_GetError());
-	for (i = 0; i < NPANELS; i++) {
-		g_lw[i] = SDL_CreateWindow(PANELS[i].title, SDL_WINDOWPOS_UNDEFINED,
-					   SDL_WINDOWPOS_UNDEFINED, PANELS[i].w,
-					   PANELS[i].h, SDL_WINDOW_RESIZABLE);
+	if (ini_int("view", "smooth", 0)) SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+	for (i = 0; i < NPANELS && ini_int("panels", "show", 1); i++) {
+		static const char *const SEC[NPANELS] = { "lamps", "displays", "bargraphs" };
+		int x = SDL_WINDOWPOS_UNDEFINED, y = SDL_WINDOWPOS_UNDEFINED, w = PANELS[i].w, h = PANELS[i].h;
+		ini_rect(SEC[i], &x, &y, &w, &h);
+		g_lw[i] = SDL_CreateWindow(PANELS[i].title, x, y, w, h, SDL_WINDOW_RESIZABLE);
 		if (!g_lw[i]) { fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError()); return 0; }
 		g_lr[i] = SDL_CreateRenderer(g_lw[i], -1, SDL_RENDERER_ACCELERATED);
 		if (!g_lr[i]) g_lr[i] = SDL_CreateRenderer(g_lw[i], -1, 0);
@@ -1634,12 +2027,29 @@ static int live_open(const char *frames)
 		fclose(f);
 	}
 	if (g_frames_n > 0 || g_mesh_id || g_rig_id || g_capture) {
-		g_vw = SDL_CreateWindow("battlepod - main view", SDL_WINDOWPOS_UNDEFINED,
-					SDL_WINDOWPOS_UNDEFINED, g_view_w * 2, g_view_h * 2,
-					SDL_WINDOW_RESIZABLE);
+		int x = SDL_WINDOWPOS_UNDEFINED, y = SDL_WINDOWPOS_UNDEFINED, w, h;
+		g_strip = g_capture && ini_int("view", "strip", 0);
+		w = g_view_w * 2;
+		h = (g_view_h + (g_strip ? STRIP_H : 0)) * 2;
+		Uint32 fl = SDL_WINDOW_RESIZABLE;
+		char title[96];
+		ini_rect("view", &x, &y, &w, &h);
+		ini_str("view", "title", "battlepod - main view", title, sizeof title);
+		if (ini_int("view", "fullscreen", 0)) {
+			/* Over the monitor that holds [view] x, y (the launcher puts
+			 * them on the one chosen), else monitor = n, from 1. */
+			if (ini_int("view", "x", -99999) == -99999) {
+				int m = ini_int("view", "monitor", 1) - 1;
+				if (m < 0 || m >= SDL_GetNumVideoDisplays()) m = 0;
+				x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(m);
+			}
+			fl = SDL_WINDOW_FULLSCREEN_DESKTOP;
+		}
+		g_vw = SDL_CreateWindow(title, x, y, w, h, fl);
+		if (g_vw && g_capture) SDL_RaiseWindow(g_vw);	/* the keys go to the cockpit */
 		g_vr = SDL_CreateRenderer(g_vw, -1, SDL_RENDERER_ACCELERATED);
 		if (!g_vr) g_vr = SDL_CreateRenderer(g_vw, -1, 0);
-		SDL_RenderSetLogicalSize(g_vr, g_view_w, g_view_h);
+		SDL_RenderSetLogicalSize(g_vr, g_view_w, g_view_h + (g_strip ? STRIP_H : 0));
 		g_vt = SDL_CreateTexture(g_vr, SDL_PIXELFORMAT_RGB24,
 					 SDL_TEXTUREACCESS_STREAMING, g_view_w, g_view_h);
 	}
@@ -1666,13 +2076,19 @@ static int live_open(const char *frames)
  * Remote I/O board frames them and appended to what DUART channel A has left
  * to deliver.
  *
- *   W / S      throttle up / down, in eighths (analog A0, 0 to 0x340)
+ *   W / S      throttle up / down, in eighths (analog A0, 0 to 0x340);
+ *              X closes it
  *   A / D      stick left / right (A1 / A2); the first key also selects
  *              advanced mode and "stick turns" (buttons 33 and 31), in which
  *              the stick steers
- *   space      trigger (button A5)
+ *   space      trigger group 1 (button A5); F and G groups 2 and 3 (A6,
+ *              A7); Enter all three
+ *   Q / E      twist the torso left / right (51 / 1C); C centres it (28)
+ *   R / V      look up / down (24 / 2C)
+ *   Z / +, -   zoom in / out (3D / 43)
  *   T          target select (button 40)
  *   L          searchlight (button 20)
+ *   F1-F3      radar, map, damage display (00, 04, 08)
  */
 
 static int  g_live_throttle, g_live_moded;
@@ -1714,19 +2130,32 @@ static void live_key(SDL_Keycode k, int down, int repeat)
 		g_live_moded = 1;
 	}
 	switch (k) {
-	case SDLK_w: case SDLK_s:
+	case SDLK_w: case SDLK_s: case SDLK_x:
 		if (!down) break;
-		g_live_throttle += (k == SDLK_w ? 0x68 : -0x68);
+		g_live_throttle = k == SDLK_x ? 0 : g_live_throttle + (k == SDLK_w ? 0x68 : -0x68);
 		if (g_live_throttle < 0) g_live_throttle = 0;
 		if (g_live_throttle > 0x340) g_live_throttle = 0x340;
 		live_analog(0xA0, g_live_throttle);
 		break;
 	case SDLK_a: if (!repeat) live_analog(0xA1, down ? 0x80 : 0); break;
 	case SDLK_d: if (!repeat) live_analog(0xA2, down ? 0x80 : 0); break;
-	case SDLK_SPACE: if (!repeat) live_button(0xA5, down); break;
-	case SDLK_t: if (!repeat) live_button(0x40, down); break;
-	case SDLK_l: if (!repeat) live_button(0x20, down); break;
-	default: break;
+	case SDLK_RETURN:
+		if (!repeat) { live_button(0xA5, down); live_button(0xA6, down); live_button(0xA7, down); }
+		break;
+	default:
+		if (!repeat) {
+			static const struct { SDL_Keycode k; uint8_t id; } KEYS[] = {
+				{ SDLK_SPACE, 0xA5 }, { SDLK_f, 0xA6 }, { SDLK_g, 0xA7 }, { SDLK_t, 0x40 },
+				{ SDLK_l, 0x20 }, { SDLK_q, 0x51 }, { SDLK_e, 0x1C }, { SDLK_c, 0x28 },
+				{ SDLK_r, 0x24 }, { SDLK_v, 0x2C }, { SDLK_z, 0x3D }, { SDLK_EQUALS, 0x3D },
+				{ SDLK_KP_PLUS, 0x3D }, { SDLK_MINUS, 0x43 }, { SDLK_KP_MINUS, 0x43 },
+				{ SDLK_F1, 0x00 }, { SDLK_F2, 0x04 }, { SDLK_F3, 0x08 },
+			};
+			size_t i;
+			for (i = 0; i < sizeof KEYS / sizeof *KEYS; i++)
+				if (KEYS[i].k == k) live_button(KEYS[i].id, down);
+		}
+		break;
 	}
 }
 
@@ -1790,6 +2219,71 @@ static void live_pad(void)
 #undef DEAD
 }
 
+/* The USB controllers of [joy], read each pump (Windows). The lever takes
+ * the throttle whenever it moves, so the keys still work beside it. */
+static void live_joy(void)
+{
+#ifdef _WIN32
+	static DWORD scanned;
+	static int last_lever = -1, sent_l = -1, sent_r = -1;
+	char buf[96];
+	int a, i, x;
+
+	if (g_joy_on < 0) {
+		g_joy_on = ini_int("joy", "enabled", 1);
+		g_joy_dead = ini_int("joy", "deadzone", 4) * 10;
+		for (a = 0; a < J_AXES; a++) {
+			ini_str("joy", J_AXIS_KEY[a][0], J_AXIS_KEY[a][1], buf, sizeof buf);
+			jref_parse(&g_jaxis[a], buf);
+		}
+		for (a = 0; a < J_NBTN; a++) {
+			ini_str("joy", J_BTN[a].key, J_BTN[a].def, buf, sizeof buf);
+			jref_parse(&g_jbtn[a], buf);
+		}
+	}
+	if (!g_joy_on) return;
+	if (!scanned || GetTickCount() - scanned > 2000) { joy_scan(); scanned = GetTickCount(); }
+	for (i = 0; i < JMAX; i++) {
+		if (!g_jd[i].ok) continue;
+		g_jd[i].st.dwSize = sizeof g_jd[i].st;
+		g_jd[i].st.dwFlags = JOY_RETURNALL;
+		if (joyGetPosEx((UINT)i, &g_jd[i].st) != JOYERR_NOERROR) g_jd[i].ok = 0;
+	}
+
+	x = joy_axis(&g_jaxis[J_THROTTLE]);
+	if (x >= 0) {
+		int v = x <= g_joy_dead ? 0 : (x - g_joy_dead) * 0x340 / (1000 - g_joy_dead);
+		if (last_lever < 0 || abs(x - last_lever) > 4) {
+			last_lever = x;
+			if (v != g_live_throttle) { g_live_throttle = v; live_analog(0xA0, v); }
+		}
+	}
+	x = joy_axis(&g_jaxis[J_STICK_X]);
+	if (x >= 0) {
+		int c = x * 2 - 1000, l, r;
+		c = c > g_joy_dead ? (c - g_joy_dead) * 1000 / (1000 - g_joy_dead)
+		  : c < -g_joy_dead ? (c + g_joy_dead) * 1000 / (1000 - g_joy_dead) : 0;
+		if (c && !g_live_moded) {
+			live_button(0x33, 1); live_button(0x33, 0);
+			live_button(0x31, 1); live_button(0x31, 0);
+			g_live_moded = 1;
+		}
+		l = c < 0 ? -c * 0x80 / 1000 : 0;
+		r = c > 0 ? c * 0x80 / 1000 : 0;
+		if (l != sent_l) { sent_l = l; live_analog(0xA1, l); }
+		if (r != sent_r) { sent_r = r; live_analog(0xA2, r); }
+	}
+	for (a = 0; a < J_NBTN; a++) {
+		int h = joy_held(&g_jbtn[a]);
+		if (h == g_jheld[a]) continue;
+		g_jheld[a] = h;
+		live_button(J_BTN[a].id1, h);
+		if (J_BTN[a].id2) live_button(J_BTN[a].id2, h);
+		if (J_BTN[a].id3) live_button(J_BTN[a].id3, h);
+	}
+#endif
+}
+
 /* Called from the run loop. Walks whatever new Remote I/O bytes the firmware
  * has put on the wire since last time, redraws, and pumps events. */
 static void live_pump(uint64_t step)
@@ -1806,23 +2300,36 @@ static void live_pump(uint64_t step)
 		if (g_capture && (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP))
 			live_key(e.key.keysym.sym, e.type == SDL_KEYDOWN, e.key.repeat);
 	}
-	if (g_capture) live_pad();
+	if (g_capture) { live_pad(); live_joy(); }
 	if (g_vt && g_capture) {
 		/* The pod's own latest frame, drawn from its own camera. */
 		static struct raster f;
 		static int drawn_seq = -1;
 		int models;
-		if (g_frame_latest.have_cam && g_frame_latest.seq != drawn_seq) {
+		static Uint32 strip_at;
+		int fresh = g_frame_latest.have_cam && g_frame_latest.seq != drawn_seq;
+		if (fresh) {
 			frame_draw(&f, &g_frame_latest, &models, 0);
 			drawn_seq = g_frame_latest.seq;
 			SDL_UpdateTexture(g_vt, NULL, f.px, RAS_W * 3);
+		}
+		/* With the strip, at least ten times a second: the panel changes
+		 * between frames too. */
+		if (fresh || (g_strip && SDL_GetTicks() - strip_at > 100)) {
+			SDL_Rect pic = { 0, 0, g_view_w, g_view_h };
+			SDL_SetRenderDrawColor(g_vr, 0, 0, 0, 255);
 			SDL_RenderClear(g_vr);
-			SDL_RenderCopy(g_vr, g_vt, NULL, NULL);
+			SDL_RenderCopy(g_vr, g_vt, NULL, &pic);
+			if (g_strip) {
+				draw_strip(g_vr, &g_panel, g_view_h, g_view_w);
+				strip_at = SDL_GetTicks();
+			}
 			SDL_RenderPresent(g_vr);
 		}
 	}
 
 	for (i = 0; i < NPANELS; i++) {
+		if (!g_lr[i]) continue;
 		PANELS[i].draw(g_lr[i], &g_panel);
 		SDL_RenderPresent(g_lr[i]);
 	}
@@ -1855,7 +2362,7 @@ static void live_pump(uint64_t step)
 		char t[96];
 		snprintf(t, sizeof t, "%s  -  %u frames, %llu instructions",
 			 PANELS[0].title, g_panel.frames, (unsigned long long)step);
-		SDL_SetWindowTitle(g_lw[0], t);
+		if (g_lw[0]) SDL_SetWindowTitle(g_lw[0], t);
 	}
 }
 
@@ -2113,7 +2620,12 @@ static void net_poll(uint32_t now)
 	while ((n = recvfrom(g_netsock, (char *)buf, sizeof buf, 0, NULL, NULL)) > 0) {
 		g_net_heard = 1;
 		g_net_in++;
-		if (buf[0] == 'P' && n > 1) pkt_add_raw(buf + 1, (uint32_t)(n - 1));
+		if (buf[0] == 'P' && n > 1) {
+			pkt_add_raw(buf + 1, (uint32_t)(n - 1));
+#ifdef BATTLEPOD_SDL
+			radar_note(buf + 1, (uint32_t)(n - 1), 0);
+#endif
+		}
 		else if (buf[0] == 'R' && n > 1) rx_append(buf + 1, (size_t)(n - 1));
 		else if (buf[0] == 'Q') g_net_quit = 1;
 	}
@@ -2241,6 +2753,9 @@ static void net_send_packet(uint32_t node, const uint8_t *d, uint32_t n)
 	memcpy(buf + 2, d, n);
 	net_send(buf, (int)n + 2);
 	g_net_out++;
+#ifdef BATTLEPOD_SDL
+	radar_note(d, n, 1);
+#endif
 }
 
 static uint32_t g_monbase;

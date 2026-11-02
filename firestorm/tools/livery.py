@@ -63,7 +63,7 @@ class Console:
                 os.remove(fs[0])
                 return im
             time.sleep(0.1)
-        raise RuntimeError("the console made no snapshot (is it running, with [shim] snapshots = 1?)")
+        raise RuntimeError("the console made no snapshot (is it running?)")
 
     def pick(self, at, n):
         """Number n in the list at `at`: open it, Home, Down, Enter."""

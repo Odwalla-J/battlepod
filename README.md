@@ -35,9 +35,11 @@ checkpoints (`make conformance`).
 | Head-up display | the reticle and the drop bay; text readouts not yet |
 | Explosions, day, dusk and night skies | yes; night's lighting on the ground not yet |
 | Panel: lamps, displays, bar graphs (Remote I/O) | yes, one window per device |
-| Keyboard as throttle, stick, trigger, target select | yes |
+| Keyboard, gamepad and USB controllers as throttle, stick, triggers, torso, view | yes |
+| A launcher: pick 'Mech, map, time of day, CPU pilots; window, controls; operator's view; careers | yes (`firestorm/launcher`, the BattleTech 3.0 pages) |
 | Several pods over UDP, CPU pilots, the operator's view | yes (`tools/hub.py`) |
 | Headless video, `--headless --record out.mp4` | yes |
+| The panel's state and a radar under the main view (`battletech.ini [view] strip`) | yes: message line, engine, throttle, weapons, Mechs within 500 m |
 | Secondary (Amiga) display, sound | no |
 
 The cockpit boots from its own image set to `main game loop (SecCom 674 bytes).`
@@ -87,6 +89,13 @@ cockpit, flown by CPU pilots, seen from above.*
 ## Getting Started
 
 ### Quick start
+
+The easiest way in is the launcher in `firestorm/launcher` (its BattleTech 3.0
+pages, [firestorm/docs/BATTLETECH3.md](firestorm/docs/BATTLETECH3.md)): after
+`make && make cockpit`, `python firestorm/launcher/fslauncher.py --page bt3`
+(Setup leaves it as `Launcher.cmd`) and *Drop in*. The steps below set it up
+from scratch.
+
 
 1. Download the repository (the green *Code* button, *Download ZIP*) and
    unzip it, or clone it.

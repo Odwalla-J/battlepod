@@ -36,6 +36,13 @@ usage:
   tools/bridge.py --game firestorm      (then vmfd.py --uid vmfd-1 ... -5,
                                         or mfdrecv.py --all for the pictures)
 
+A module that only shows pictures (an ESP32 MFD board, firmware/esp32-mfd)
+and has no display to stream - a BattleTech 3.0 panel, say - gets its page
+drawn here instead: the layout's key labels, lit as the game lights them,
+its text fields and bars, as a picture, sent as the stream's FRAMEs are
+(Panel, below). A picture-only board that the layout does not name takes
+the layout's first free mfd module, so one board serves either game.
+
 Every id the game sends that the profile does not name is logged once: the
 way the remaining unknowns get found during play. A module that goes away
 keeps its state in the model and gets all of it back when it returns.
@@ -49,6 +56,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mfdpaint as paint  # noqa: E402
 import mfdstream as ms  # noqa: E402
 import modproto as mp  # noqa: E402
 
@@ -204,16 +212,61 @@ class Layout:
 # ------------------------------------------------------------------ modules
 
 # A module may have this many streamed updates sent and not yet shown.
-FRAME_WINDOW = 2
+FRAME_WINDOW = 3
 # ... and this many bytes of pictures waiting to go to it.
 BULK_LIMIT = 64 * 1024
 # An update unacknowledged this long was lost (a CRC error on the way back):
 # long enough that a slow link's honest acknowledgements are never taken for
 # lost ones - that would let a backlog build.
-ACK_LOST = 3.0
+ACK_LOST = 1.0
 # A TCP module's socket buffer, kept small so what waits for a module waits
 # in the bridge's queue, where the pacing can see it.
 TCP_SNDBUF = 32 * 1024
+
+
+class Panel:
+    """A module's page drawn here, for a board that only shows pictures:
+    the key labels across the top and bottom, lit as the game lights them
+    (bright: filled; dim: ruled), the text fields and bars where the layout
+    puts them - its places are a 320x240 screen's, doubled - and the 3.0
+    pod's name plate. Sent whole when the board asks, else as what changed,
+    one picture at a time."""
+
+    def __init__(self, title=""):
+        self.keys = {}          # index -> (label, level 0-3)
+        self.texts = {}         # field -> (x, y, size, text)
+        self.bars = {}          # field -> (x, y, w, h, value, maximum)
+        self.title = title
+        self.enc = ms.Encoder(1, paint.W, paint.H)
+        self.dirty = True
+        self.waiting = 0.0      # when the picture in flight went, 0 if none
+
+    def draw(self):
+        W, H = paint.W, paint.H
+        fb = bytearray(W * H)
+        cw = W // 4
+        for index, (label, level) in self.keys.items():
+            col, top = (index - 1) % 4, index <= 4
+            x, y = col * cw, 0 if top else H - 48
+            if level >= 3:
+                paint.fill(fb, x + 6, y + 6, cw - 12, 36, 230)
+                ink = 0
+            else:
+                paint.frame(fb, x + 6, y + 6, cw - 12, 36, 150 if level else 60, 3 if level else 2)
+                ink = 255 if level else 140
+            if label:
+                paint.centred(fb, x + cw // 2, y + 17, label[:12], 2, ink)
+        paint.fill(fb, 0, 52, W, 2, 70)
+        paint.fill(fb, 0, H - 54, W, 2, 70)
+        if self.title:
+            paint.centred(fb, W // 2, H - 80, self.title, 2, 110)
+        for x, y, size, text in self.texts.values():
+            paint.text(fb, x * 2, y * 2, text, max(1, size) * 2, 255)
+        for x, y, w, h, v, mx in self.bars.values():
+            paint.frame(fb, x * 2, y * 2, w * 2, h * 2, 160, 2)
+            if mx > 0 and v > 0:
+                paint.fill(fb, x * 2 + 4, y * 2 + 4, max(0, (w * 2 - 8) * min(v, mx) // mx), h * 2 - 8, 230)
+        return fb
 
 
 class Module:
@@ -237,12 +290,22 @@ class Module:
         self.broken = None
         # the picture stream
         self.display = None     # which display it shows, if it shows one
+        self.panel = None       # or its page, drawn here (Panel)
         self.want_key = True    # waiting for a whole frame
         self.taking_key = False  # one is arriving
         self.in_update = False  # forwarding an update's parts
-        self.inflight = 0       # updates sent, not yet shown
+        self.inflight = 0       # updates sent, not yet shown: len(flight)
+        self.flight = collections.deque()       # (frame, when handed over) of each, oldest first
         self.behind = 0         # updates skipped because it was busy
         self.sent_frame_bytes = 0
+        # for --stream-stats: what reached the wire, and how the module kept up
+        self.wire_bytes = 0
+        self.acks_lost = 0      # FRAME_ACKs that never came, covered by a later one
+        self.rtt = []           # handed over -> FRAME_ACK, s
+        self.decode = []        # the module's own decode time, us
+        self.syncs = []         # SYNC reasons
+        self.ack_gap = 0.0      # the longest time between two FRAME_ACKs
+        self.last_ack = None
 
     def send(self, mtype, payload=b"", bulk=False):
         self.seq = (self.seq + 1) & 0xFF
@@ -315,6 +378,7 @@ class Bridge:
         self.tcp.bind(("127.0.0.1", a.module_port))
         self.tcp.listen(8)
         self.serials = []
+        self.serial_waiting = {}    # port -> when it was last tried
         for port in a.serial or []:
             self.open_serial(port)
         # The MFD picture stream: the shim's stream port, when it has one.
@@ -399,17 +463,29 @@ class Bridge:
     def push(self, m, changed=None):
         """Send a module its bindings' state: everything, or one name's."""
         lay = self.layout
+        pn = m.panel
         for index, (logical, label) in lay.keys[m.name].items():
             if changed in (None, logical):
                 level = self.state.get(logical, 0)
                 if isinstance(level, int):
                     m.send(mp.LED, mp.led(index - 1, LAMP_PWM[min(level, 3)]))
+                    if pn:
+                        pn.keys[index] = (label, min(level, 3))
+                        pn.dirty = True
         for field, x, y, size, logical in lay.texts[m.name]:
             if changed in (None, logical) and logical in self.state:
-                m.send(mp.TEXT, mp.text(field, x, y, size, 0, str(self.state[logical]).rstrip()))
+                text = str(self.state[logical]).rstrip()
+                m.send(mp.TEXT, mp.text(field, x, y, size, 0, text))
+                if pn:
+                    pn.texts[field] = (x, y, size, text)
+                    pn.dirty = True
         for field, x, y, w, h, mx, logical in lay.bars[m.name]:
             if changed in (None, logical) and logical in self.state:
-                m.send(mp.BAR, mp.bar(field, x, y, w, h, min(int(self.state[logical]), mx), mx))
+                v = min(int(self.state[logical]), mx)
+                m.send(mp.BAR, mp.bar(field, x, y, w, h, v, mx))
+                if pn:
+                    pn.bars[field] = (x, y, w, h, v, mx)
+                    pn.dirty = True
 
     def labels(self, m):
         """The soft label over each key, as text fields 100 + index."""
@@ -428,6 +504,12 @@ class Bridge:
             if mtype == mp.HELLO:
                 info = mp.parse_hello(p)
                 name = self.layout.module_for(info["uid"])
+                if not name and info["cls"] == "mfd" and info["kind"] == mp.SCREEN_GREY:
+                    # A picture board this layout does not name (an MFD
+                    # named for Firestorm, on 3.0): the first mfd free.
+                    taken = {o.name for o in self.modules if o is not m and o.name}
+                    name = next((n for n, x in self.layout.modules.items()
+                                 if x["cls"] == "mfd" and n not in taken), None)
                 m.info = info
                 log("bridge: %s says HELLO: %s %s, %d keys, %dx%d, firmware %r -> %s"
                     % (m.what, info["cls"], info["uid"], info["keys"], info["width"],
@@ -438,10 +520,15 @@ class Bridge:
                             other.name = None          # replaced: reconnected
                             other.display = None
                     m.name = name
+                    d = self.layout.display.get(name)
+                    if not d and info["kind"] == mp.SCREEN_GREY and info["width"] == paint.W and info["height"] == paint.H:
+                        m.panel = Panel("BATTLETECH 3.0" if self.game == "battlepod" else "")
+                        for index, (_, label) in self.layout.keys[name].items():
+                            m.panel.keys[index] = (label, 0)
+                        log("bridge: %s shows its page, drawn here" % name)
                     m.send(mp.CLEAR)
                     self.labels(m)
                     self.push(m)
-                    d = self.layout.display.get(name)
                     if d and info["kind"] == mp.SCREEN_GREY:
                         m.display = d
                         self.resync(m)
@@ -459,14 +546,34 @@ class Bridge:
                 if self.verbose:
                     log("bridge: %s key %d %s -> %s %02X" % (m.name, index, "down" if down else "up",
                                                              logical, bid))
+            elif mtype == mp.SYNC and m.panel:
+                self.panel_send(m, whole=True)
+            elif mtype == mp.FRAME_ACK and m.panel:
+                m.panel.waiting = 0.0
             elif mtype == mp.SYNC and m.display:
                 d, why, have = ms.parse_sync(p)
+                m.syncs.append(why)
                 if self.verbose:
                     log("bridge: %s asks for a whole frame (%s)" % (m.name, ms.SYNC_REASONS.get(why, why)))
                 self.resync(m)
             elif mtype == mp.FRAME_ACK and m.display:
-                m.inflight = max(0, m.inflight - 1)
-                m.acked = time.monotonic()
+                # Cumulative: frame f on the screen means every frame before it
+                # was too, so one acknowledgement lost on the link is made good
+                # by the next instead of holding the window shut.
+                _, f, decode_us = ms.parse_frame_ack(p)
+                m.acked = now = time.monotonic()
+                done = None
+                while m.flight and (f - m.flight[0][0]) & 0xFFFFFFFF < 0x80000000:
+                    if done is not None:
+                        m.acks_lost += 1
+                    done = m.flight.popleft()
+                m.inflight = len(m.flight)
+                if done is not None:
+                    m.rtt.append(now - done[1])
+                m.decode.append(decode_us)
+                if m.last_ack is not None:
+                    m.ack_gap = max(m.ack_gap, now - m.last_ack)
+                m.last_ack = now
             elif mtype == mp.ERROR:
                 log("bridge: %s error %d %s" % (m.what, p[0], p[1:].decode("utf-8", "replace")))
 
@@ -475,11 +582,30 @@ class Bridge:
             import serial  # pyserial
         except ImportError:
             sys.exit("--serial needs pyserial: pip install pyserial")
-        s = serial.Serial(port, 115200, timeout=0)
+        # COM5, or COM8@2000000 for a module behind a USB-serial chip (a
+        # CH340 on an ESP32 display board), where the speed is real; native
+        # USB CDC ignores it. DTR and RTS stay released: on those boards they
+        # reset the ESP32 and put it in its bootloader.
+        name, _, baud = port.partition("@")
+        s = serial.Serial()
+        s.port, s.baudrate, s.timeout, s.write_timeout = name, int(baud or 115200), 0, 2
+        s.dtr = s.rts = False
+        try:
+            s.open()
+        except (OSError, serial.SerialException) as e:
+            # Not plugged in, or held by another program: tried again every
+            # few seconds, so a board plugged in mid-game is found.
+            if port not in self.serial_waiting:
+                log("bridge: %s is not there (%s); trying again every 3 s" % (port, e))
+            self.serial_waiting[port] = time.monotonic()
+            return
+        self.serial_waiting.pop(port, None)
         m = Module(s, s.write, port, serial=True)
         self.serials.append(m)
         self.modules.append(m)
+        s.write(b"\x00")      # ends whatever half packet the module holds from before
         m.send(mp.HELLO_Q, mp.hello_q())
+        m.asked = time.monotonic()
         log("bridge: opened %s" % port)
 
     def drop(self, m, why):
@@ -487,6 +613,7 @@ class Bridge:
         self.modules.remove(m)
         if m in self.serials:
             self.serials.remove(m)
+            self.serial_waiting[m.what] = time.monotonic()     # back when it is plugged in again
         try:
             m.link.close()
         except OSError:
@@ -497,10 +624,35 @@ class Bridge:
     def deflates(self, m):
         return bool(m.info and m.info.get("caps", 0) & ms.CAP_DEFLATE)
 
+    def panel_send(self, m, whole=False):
+        """The panel's picture: what changed, or all of it."""
+        pn = m.panel
+        fb = pn.draw()
+        if whole:
+            pn.enc.update(fb)
+            parts = pn.enc.key()
+        else:
+            parts = pn.enc.update(fb)
+        pn.dirty = False
+        if not parts:
+            return
+        if self.deflates(m):
+            parts = [ms.deflate_part(x) for x in parts]
+        for x in parts:
+            m.send(mp.FRAME, x, bulk=True)
+        pn.waiting = time.monotonic()
+
+    def panel_tick(self, t):
+        for m in self.modules:
+            pn = m.panel
+            if pn and pn.dirty and (not pn.waiting or t - pn.waiting > ACK_LOST):
+                self.panel_send(m)
+
     def resync(self, m):
         """Start m again from the next whole frame: what it has queued is
         no use to it now."""
         m.want_key, m.taking_key, m.in_update, m.inflight = True, False, False, 0
+        m.flight.clear()
         m.bulk.clear()
         m.bulk_bytes = 0
         m.acked = time.monotonic()
@@ -574,7 +726,8 @@ class Bridge:
                     continue                    # it has this picture already
                 if end:
                     m.taking_key = m.want_key = False
-                    m.inflight += 1
+                    m.flight.append((h["frame"], time.monotonic()))
+                    m.inflight = len(m.flight)
             else:
                 if m.want_key:
                     continue
@@ -591,13 +744,16 @@ class Bridge:
                     continue
                 if end:
                     m.in_update = False
-                    m.inflight += 1
+                    m.flight.append((h["frame"], time.monotonic()))
+                    m.inflight = len(m.flight)
             if self.deflates(m):
                 if packed is None:
                     packed = ms.deflate_part(p)
                 m.send(mp.FRAME, packed, bulk=True)
+                m.wire_bytes += len(packed)
             else:
                 m.send(mp.FRAME, p, bulk=True)
+                m.wire_bytes += len(p)
             m.sent_frame_bytes += len(p)
 
     def stream_tick(self, t):
@@ -607,7 +763,8 @@ class Bridge:
             if not m.display:
                 continue
             if m.inflight and t - getattr(m, "acked", t) > ACK_LOST:
-                m.inflight = 0                  # an acknowledgement lost: do not wait for it
+                m.inflight = 0                  # none of them acknowledged: do not wait for them
+                m.flight.clear()
             if m.want_key and not m.taking_key and not m.inflight and not m.bulk:
                 self.ask_key(m.display)
         if self.stream_stats and t - self.sstats_at >= 10:
@@ -617,9 +774,19 @@ class Bridge:
                     % (d, ups / el, keys, nbytes / el / 1024))
             for m in self.modules:
                 if m.display:
-                    log("bridge: %s: %.1f KB/s sent, %d updates skipped while busy"
-                        % (m.name, m.sent_frame_bytes / el / 1024, m.behind))
-                    m.sent_frame_bytes = m.behind = 0
+                    rtt = sorted(m.rtt) or [0]
+                    dec = sorted(m.decode) or [0]
+                    log("bridge: %s: %.1f KB/s of pictures, %.1f KB/s on the wire, %d updates skipped while busy, "
+                        "%d acks lost, %d bad packets from it, %d SYNC%s; shown %d, ack %.0f ms (95%% %.0f, worst %.0f), "
+                        "decode %.1f ms (worst %.1f), longest gap %.0f ms"
+                        % (m.name, m.sent_frame_bytes / el / 1024, m.wire_bytes / el / 1024, m.behind, m.acks_lost,
+                           m.reader.bad - getattr(m, "bad_told", 0),
+                           len(m.syncs), " (%s)" % ", ".join(ms.SYNC_REASONS.get(w, str(w)) for w in m.syncs) if m.syncs else "",
+                           len(m.rtt), 1000 * sum(rtt) / len(rtt), 1000 * rtt[int(len(rtt) * .95)], 1000 * rtt[-1],
+                           sum(dec) / len(dec) / 1000, dec[-1] / 1000, 1000 * m.ack_gap))
+                    m.sent_frame_bytes = m.behind = m.wire_bytes = m.acks_lost = 0
+                    m.bad_told = m.reader.bad
+                    m.rtt, m.decode, m.syncs, m.ack_gap = [], [], [], 0.0
             self.sstats, self.sstats_at = {}, t
 
     # ---- the loop
@@ -700,7 +867,14 @@ class Bridge:
                     self.drop(m, m.broken)
                 elif t - m.heard > 5 and m not in self.serials:
                     self.drop(m, "silent for 5 s")
+                elif m in self.serials and not m.name and t - getattr(m, "asked", t) > 2:
+                    m.send(mp.HELLO_Q, mp.hello_q())    # a serial module that has not answered yet
+                    m.asked = t
             self.stream_tick(t)
+            self.panel_tick(t)
+            for port, tried in list(self.serial_waiting.items()):
+                if t - tried > 3:
+                    self.open_serial(port)
 
 
 def main():
@@ -712,7 +886,7 @@ def main():
     ap.add_argument("--firestorm-port", type=int, default=9100)
     ap.add_argument("--pod-port", type=int, default=5180)
     ap.add_argument("--module-port", type=int, default=5181)
-    ap.add_argument("--serial", action="append", help="a module on this serial port")
+    ap.add_argument("--serial", action="append", help="a module on this serial port (COM5, or COM8@2000000 at that speed)")
     ap.add_argument("--stream-port", type=int, default=9110,
                     help="the shim's MFD stream port (tcp); 0: none")
     ap.add_argument("--stream", action="store_true", help="take the MFD stream with --game battlepod too")

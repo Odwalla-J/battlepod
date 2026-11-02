@@ -21,12 +21,25 @@ firmware, not the hub.
 
 usage:
   hub.py [--scenario NAME] [--bots N] [--human] [--vehicles 0,8,12,...]
-         [--port P] [--seconds S]
+         [--port P] [--seconds S] [--names Ace,...] [--state FILE]
+         [--bin DIR] [--logs DIR] [--remote N --listen 0.0.0.0]
 
 Needs VWE_GAME_FILES, `make` (and `make cockpit` for --human). Pod output
-goes to build/pod<N>.log.
+goes to build/pod<N>.log (--logs). The programs are build/'s, or --bin's
+(a packaged copy keeps them elsewhere). With --human the centre closes when
+the person's cockpit does. --state keeps a JSON file of the battle as it
+goes - where every Mech is, who is down, who destroyed whom - for a launcher
+to draw the operator's view and the scores from; it says "over" at the end.
+
+--remote N keeps seats for N people on other PCs: pods 2 .. N+1 (after this
+PC's own, before the CPU pilots), not started here - each is a cockpit on
+its own PC run with --net THIS-PC:PORT --net-node SEAT and POD_ARGS, which
+the launcher's "Join a battle" does - and it needs --listen 0.0.0.0 to be
+reached. Their names and Mechs are the operator's to give, as the arcade's
+console did.
 The wire between the hub and its pods is docs/api.md.
 """
+import json
 import math
 import os
 import socket
@@ -84,10 +97,12 @@ class Mech:
 
 
 class Pod:
-    def __init__(self, node, vehicle, human):
+    def __init__(self, node, vehicle, human, name="", remote=False):
         self.node = node
         self.vehicle = vehicle
         self.human = human
+        self.remote = remote    # a person on another PC: not started here
+        self.name = name or ("Pod %d" % node)
         self.addr = None
         self.outbox = []
         self.started = 0.0
@@ -96,6 +111,8 @@ class Pod:
         self.firing = False
         self.fire_at = 0.0
         self.down = False
+        self.respawn_at = 0.0   # when a destroyed Mech drops in again (--respawn)
+        self.mech_pkt = None    # its MECH_CLASS, as the game began
         self.moded = 0
         self.ops = {}
         self.pool = []
@@ -109,7 +126,7 @@ class Hub:
             sys.exit("hub: set VWE_GAME_FILES")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 22)
-        self.sock.bind(("127.0.0.1", args.port))
+        self.sock.bind((args.listen, args.port))
         self.sock.setblocking(False)
         self.mechs = {}
         self.pods = []
@@ -118,13 +135,19 @@ class Hub:
         self.unicast = 0
         self.kills = []
         self.hits = {}
+        self.last_hit = {}      # thing -> (who hit it last, when)
         n = 0
+        names = [s.strip() for s in (args.names or "").split(",")]
         if args.human:
             n += 1
-            self.pods.append(Pod(n, args.vehicles[0], True))
+            self.pods.append(Pod(n, args.vehicles[0], True, names[0] if names else ""))
+        for i in range(args.remote):
+            n += 1
+            self.pods.append(Pod(n, args.vehicles[n - 1], True, names[n - 1] if n - 1 < len(names) else "",
+                                 remote=True))
         for i in range(args.bots):
             n += 1
-            self.pods.append(Pod(n, args.vehicles[n - 1], False))
+            self.pods.append(Pod(n, args.vehicles[n - 1], False, names[n - 1] if n - 1 < len(names) else ""))
         self.world = self.build_world()
         scen = os.path.join(self.gf, "Scenarios", self.args.scenario)
         self.map_objects = [(o[2], o[3], o[0]) for o in mapsend.objects(scen)]
@@ -157,11 +180,12 @@ class Hub:
                 facing, x, y, _ = drops[(pod.node - 1) % len(drops)]
             # The Mech belongs to its pod: +0x08 is the owner word, and a hit
             # on a Mech another pod owns is sent to that pod as 0xBA.
-            world.append(addressed(pkt(0xE4, 0x60, [
+            pod.mech_pkt = addressed(pkt(0xE4, 0x60, [
                 (0x0E, ">l", 1), (0x12, ">l", pod.node),
                 (0x16, ">f", x), (0x1A, ">f", y), (0x1E, ">f", 5.4),
-                (0x22, "8s", ("Pod %d" % pod.node).encode()),
-                (0x4A, ">h", pod.vehicle), (0x50, ">f", facing)]), pod.node))
+                (0x22, "8s", pod.name.encode("ascii", "replace")[:8]),
+                (0x4A, ">h", pod.vehicle), (0x50, ">f", facing)]), pod.node)
+            world.append(pod.mech_pkt)
             m = self.mechs[pod.node] = Mech(pod.node)
             m.x, m.y, m.heading = x, y, facing
         nmap = 0
@@ -227,21 +251,30 @@ class Hub:
 
     def launch(self):
         for pod in self.pods:
+            if pod.remote:
+                print("hub: seat %d waits for a cockpit on another PC (--net-node %d)" % (pod.node, pod.node))
+                continue
             exe = "cockpit.exe" if pod.human else "battlepod.exe"
-            cmd = [os.path.join(ROOT, "build", exe),
+            cmd = [os.path.join(self.args.bin or os.path.join(ROOT, "build"), exe),
                    os.path.join(self.gf, "Full_Load_3_0")] + POD_ARGS + [
                    "--net", "127.0.0.1:%d" % self.args.port,
                    "--net-node", str(pod.node)]
             cmd += ["--live-pod"] if pod.human else ["--realtime"]
             cmd += self.args.pod_args.split()
-            pod.log = open(os.path.join(ROOT, "build", "pod%d.log" % pod.node), "w")
+            if pod.human:
+                cmd += self.args.human_args.split()
+            logs = self.args.logs or os.path.join(ROOT, "build")
+            os.makedirs(logs, exist_ok=True)
+            pod.log = open(os.path.join(logs, "pod%d.log" % pod.node), "w")
             pod.proc = subprocess.Popen(cmd, stdout=pod.log, stderr=subprocess.STDOUT,
-                                        cwd=ROOT)
+                                        cwd=ROOT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                        if not pod.human else 0)
 
     def stop(self):
         # Ask first: a pod told to quit ends its run and prints its report.
         for pod in self.pods:
-            self.send(pod, b"Q", b"")
+            if not pod.remote:              # a person elsewhere leaves when they choose
+                self.send(pod, b"Q", b"")
         for pod in self.pods:
             if pod.proc:
                 try:
@@ -296,6 +329,8 @@ class Hub:
             thing, shooter, loc = struct.unpack_from(">lll", packet, 0x08)
             key = (src.node if src else 0, thing)
             self.hits[key] = self.hits.get(key, 0) + 1
+            if shooter != thing:
+                self.last_hit[thing] = (shooter, time.time())
             if loc == -1:
                 print("hub: thing %d destroyed, credited to %d" % (thing, shooter), flush=True)
                 self.kills.append((time.time() - self.t0, thing, shooter))
@@ -304,6 +339,13 @@ class Hub:
             print("hub: pod %d's Mech is down at %.0f s" % (src.node, time.time() - self.t0),
                   flush=True)
             self.kills.append((time.time() - self.t0, src.node, 0))
+            if self.args.respawn > 0:
+                src.respawn_at = time.time() + self.args.respawn
+            # The pod does not always say who destroyed it: whoever hit it
+            # last, in the last 15 s, is credited.
+            by, at = self.last_hit.get(src.node, (0, 0.0))
+            if by and by != src.node and time.time() - at < 15:
+                self.kills.append((time.time() - self.t0, src.node, by))
             src.down = True
         if op in (0xE2, 0xED) and self.args.debug:
             print("hub: pod %s sent %s" % (src.node if src else "?",
@@ -353,7 +395,10 @@ class Hub:
         if not foes:
             self.send(pod, b"R", rio([0xC0, 0xA0, 0, 0]))
             return
-        foe = min(foes, key=lambda m: (m.x - me.x) ** 2 + (m.y - me.y) ** 2)
+        # A person's Mech counts as half as far: the CPU pilots come for
+        # the people first, as a centre's would have been set to.
+        humans = {p.node for p in self.pods if p.human}
+        foe = min(foes, key=lambda m: math.hypot(m.x - me.x, m.y - me.y) * (0.5 if m.thing in humans else 1.0))
         dx, dy = foe.x - me.x, foe.y - me.y
         dist = math.hypot(dx, dy)
         # Heading h walks along (sin h, -cos h): 0 is -Y, 90 is +X.
@@ -402,18 +447,75 @@ class Hub:
         print("t %5.0f  relayed %6d | %s" % (now - self.t0, self.relayed, " | ".join(rows)),
               flush=True)
 
+    def respawn(self, pod, now):
+        """A destroyed Mech drops in again where it began, as a centre's
+        did: its MECH_CLASS to every pod, PLAYER_LINK to its own."""
+        pod.down, pod.respawn_at = False, 0.0
+        pod.started, pod.moded, pod.firing = now, 0, False
+        for other in self.pods:
+            if other.addr:
+                self.send(other, b"P", pod.mech_pkt)
+        self.send(pod, b"P", addressed(pkt(0xED, 0x40, [
+            (0x0A, "16s", b"B1_BattleTech_1"), (0x32, ">l", pod.node)]), pod.node))
+        print("hub: pod %d drops in again at %.0f s" % (pod.node, now - self.t0), flush=True)
+
+    def write_state(self, now, over=False):
+        """The battle, for whoever draws it (--state): written whole and
+        renamed, so a reader never sees half of it."""
+        if not self.args.state:
+            return
+        # A Mech destroyed may be told by more than one pod: once per Mech
+        # within a few seconds. Only Mechs count - a building can fall too.
+        nodes = {p.node for p in self.pods}
+        credited, last = [], {}
+        for t, thing, shooter in self.kills:
+            if shooter in nodes and thing in nodes and shooter != thing and t - last.get(thing, -99) > 5:
+                credited.append((t, thing, shooter))
+                last[thing] = t
+        pods = []
+        for pod in self.pods:
+            m = self.mechs.get(pod.node)
+            kills = sum(1 for _, thing, shooter in credited if shooter == pod.node)
+            deaths = sum(1 for _, thing, shooter in self.kills if thing == pod.node and shooter == 0)
+            pods.append({"node": pod.node, "human": pod.human, "remote": pod.remote, "name": pod.name,
+                         "vehicle": pod.vehicle,
+                         "x": m.x if m else None, "y": m.y if m else None,
+                         "heading": m.heading if m else None, "speed": (m.speed * 360.0) if m else 0,
+                         "live": bool(m and now - m.seen < 3.0), "down": pod.down,
+                         "joined": bool(pod.addr), "kills": kills, "deaths": deaths,
+                         "hits_taken": self.hits.get((pod.node, pod.node), 0)})
+        if not hasattr(self, "battle_id"):
+            self.battle_id = "bt3-%x" % int(self.t0 * 1000)
+            self.started_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(self.t0))
+        state = {"id": self.battle_id, "started": self.started_at, "scenario": self.args.scenario,
+                 "t": round(now - self.t0, 1), "over": over,
+                 "bounds": self.bounds, "pods": pods,
+                 "events": [{"t": round(t, 1), "thing": thing, "by": shooter} for t, thing, shooter in credited]}
+        if not getattr(self, "_map_sent", False):
+            state["map"] = [[round(x, 1), round(y, 1), c] for x, y, c in self.map_objects]
+        tmp = self.args.state + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, self.args.state)
+        except OSError:
+            pass
+
     def run(self):
         self.t0 = time.time()
         if self.args.console:
             self.console = console_view.TkConsole(self)
         self.launch()
         last_view = 0.0
-        last_pilot = last_status = 0.0
+        last_pilot = last_status = last_state = 0.0
         try:
             while self.args.seconds <= 0 or time.time() - self.t0 < self.args.seconds:
                 self.receive()
                 self.flush()
                 now = time.time()
+                for pod in self.pods:
+                    if pod.down and pod.respawn_at and now >= pod.respawn_at and pod.addr:
+                        self.respawn(pod, now)
                 if now - last_pilot >= 0.1:
                     for pod in self.pods:
                         if not pod.human and pod.addr:
@@ -425,8 +527,14 @@ class Hub:
                 if now - last_status >= 2.0:
                     self.status(now)
                     last_status = now
-                if all(p.proc.poll() is not None for p in self.pods):
+                if now - last_state >= 0.5:
+                    self.write_state(now)
+                    last_state = now
+                if all(p.proc.poll() is not None for p in self.pods if p.proc):
                     print("hub: every pod has exited")
+                    break
+                if any(p.human and p.proc and p.proc.poll() is not None for p in self.pods):
+                    print("hub: the cockpit was closed; the centre closes")
                     break
                 time.sleep(0.005)
         except KeyboardInterrupt:
@@ -436,6 +544,7 @@ class Hub:
                 console_view.save_png(self, self.args.console_png, self.args.follow)
                 print("hub: operator's view written to %s" % self.args.console_png)
             self.stop()
+            self.write_state(time.time(), over=True)
             ms = [self.mechs[p.node] for p in self.pods if p.node in self.mechs]
             if len(ms) > 1:
                 d = min(math.hypot(a.x - b.x, a.y - b.y)
@@ -477,11 +586,24 @@ def main(argv):
                     help="write the operator's view to a PNG when the run ends")
     ap.add_argument("--follow", action="store_true",
                     help="with --console-png, follow the fighting instead of the whole map")
+    ap.add_argument("--names", default="", help="the pilots' names, the person first: Ace,Wolf,...")
+    ap.add_argument("--state", default="", help="keep the battle as JSON in this file")
+    ap.add_argument("--bin", default=os.environ.get("BATTLEPOD_BIN", ""),
+                    help="where cockpit.exe and battlepod.exe are (default build/)")
+    ap.add_argument("--logs", default="", help="where the pods' logs go (default build/)")
+    ap.add_argument("--respawn", type=float, default=0,
+                    help="seconds after a Mech is destroyed that it drops in again (0: never)")
+    ap.add_argument("--remote", type=int, default=0,
+                    help="seats for people on other PCs, after this PC's own and before the CPU pilots")
+    ap.add_argument("--listen", default="127.0.0.1",
+                    help="the address the hub takes pods on: 0.0.0.0 for pods on other PCs")
+    ap.add_argument("--human-args", default="",
+                    help="more options for the person's cockpit only, e.g. --rio-port for a panel bridge")
     ap.add_argument("--pod-args", default="",
                     help="more options for every pod, e.g. peeks for a report")
     args = ap.parse_args(argv[1:])
     args.vehicles = [int(v) for v in args.vehicles.split(",")]
-    while len(args.vehicles) < args.bots + 1:
+    while len(args.vehicles) < args.bots + args.remote + 1:
         args.vehicles.append(0)
     Hub(args).run()
 

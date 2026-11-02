@@ -91,6 +91,9 @@ MINGW*|MSYS*)
         "$w" "$(cygpath -w /usr/bin/bash.exe)" "$GF" > Play.cmd
     printf '@echo off\r\nset MSYSTEM=MINGW64\r\nset CHERE_INVOKING=1\r\ncd /d "%s"\r\n"%s" -lc "VWE_GAME_FILES=\\"%s\\" tools/cockpit.sh %%*"\r\n' \
         "$w" "$(cygpath -w /usr/bin/bash.exe)" "$GF" > Cockpit.cmd
+    # The launcher's BattleTech 3.0 pages: a battle set up in a window.
+    printf '@echo off\r\ncd /d "%s"\r\nstart "BattleTech launcher" /min python firestorm\\launcher\\fslauncher.py --page bt3\r\n' \
+        "$w" > Launcher.cmd
     launcher=Play.cmd ;;
 *)
     printf '#!/bin/sh\ncd "$(dirname "$0")"\nVWE_GAME_FILES="$(cat .vwe)" exec tools/play.sh "$@"\n' > play
@@ -100,3 +103,4 @@ esac
 say ""
 say "Done. Start a game with $launcher (W/S throttle, A/D stick, space fires, T targets, Esc quits)."
 if [ -f Cockpit.cmd ]; then say "Cockpit.cmd does the same with a virtual cockpit MFD beside it."; fi
+if [ -f Launcher.cmd ]; then say "Launcher.cmd opens the launcher: a 'Mech, a map, CPU pilots, your controls and window."; fi

@@ -8,6 +8,43 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **A launcher.** The Firestorm launcher (`firestorm/launcher`) runs
+  BattleTech 3.0 too: pick a callsign, a 'Mech, a map, day/dusk/night, up to
+  seven CPU pilots and where they start, and drop in; the operator's view and
+  the scores live beside it; finished battles go into the pilots' careers.
+  firestorm/docs/BATTLETECH3.md.
+- **`battletech.ini`** (named by `BATTLEPOD_INI`): the cockpit's main view
+  placed, sized or full screen, scaled smoothly, titled; the panel windows
+  on or off and placed.
+- **More of the cockpit on the keyboard** - X closes the throttle, F/G/Enter
+  fire groups 2, 3 and all, Q/E/C twist and centre the torso, R/V look up and
+  down, Z/- zoom, F1-F3 the displays - and **USB controllers** (winmm, as
+  Firestorm's shim reads them): a throttle lever, the stick, and any of those
+  on buttons or a hat.
+- **The panel under the picture** (`[view] strip`): the message line, the
+  engine status and readout, the throttle, and the first six weapons - each
+  one's recycle bar, ammunition and trigger groups - in a band under the
+  main view, with a radar: every Mech within 500 m, heading up, from the
+  0xEC position broadcasts passing through the cockpit's network link (the
+  pod's own radar was the secondary display's). The cockpit plays from one
+  window.
+- **The 3.0 panel on an MFD board.** For a module that only shows pictures
+  and has no display to stream, the bridge draws the layout's page itself -
+  key labels lit as the game lights them, text fields, bars
+  (`tools/mfdpaint.py`) - and streams it; a board the layout does not name
+  takes its first free MFD. A serial module that is missing, or unplugged,
+  is tried again every three seconds.
+- **The hub**: `--names` (the pilots' name plates), `--state FILE` (the
+  battle as JSON, for a launcher), `--bin`/`--logs` (a packaged copy); it
+  closes when the person's cockpit does, and its CPU pilots go for people
+  first. `--human-args` gives the person's cockpit alone more options (a
+  `--rio-port` for the panel's bridge). `--remote N` keeps seats for people
+  on other PCs, joined with `cockpit.exe ... --net HUB:5170 --net-node SEAT`
+  (the launcher's *Join a battle*); `--listen 0.0.0.0` lets them in. A Mech
+  that goes down is credited to whoever hit it last (within 15 s): the pod
+  does not always send its own "destroyed by". `--respawn S` drops a
+  destroyed Mech in again after S seconds, where it began.
+
 - **The panel talks in a game.** The DUART's channel A transmitter now takes
   a byte time (`--rio-baud`, default 9600; 0 for the old instant one).
   Instant, it let `rio_send` drain its own queue between enabling the

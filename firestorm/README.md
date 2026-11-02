@@ -33,10 +33,38 @@ make test       # the MFD stream's encoder against tools/mfdstream.py (needs Pyt
 Stop every `MW4.exe` and `Launcher.exe` before `make install`: a running copy
 holds `ddraw.dll` open and the copy fails.
 
+## A copy that starts from one program
+
+`make package GAME=C:/path/to/MW4 DEST=C:/Games/Firestorm` (or `make`, then
+`python tools/package.py --game ... --dest ...` where MINGW32 has no
+Python) lays out a folder that needs nothing installed:
+
+```
+Firestorm.exe   double-click: opens the launcher
+python\         an embeddable Python from python.org
+launcher\       the launcher
+tools\          start-centre.ps1 and desk.py, for the test match
+game\           a copy of GAME with the shim in place
+BattleTech 3.0.exe   the same starter, opening on BattleTech 3.0
+battletech\     BattleTech 3.0: battlepod's emulator, its centre and a copy
+                of the release's Game Files (when battlepod is built)
+```
+
+It carries your game files, so it is for you, not for handing out. Every
+path is relative to `Firestorm.exe`: move the folder, or copy it to another
+PC, and the launcher puts `ctcl.ini` right on its next start (the pod's
+`fsrun.exe` path, and on a PC that is both console and pod, this PC's
+address). Run it again to pick up a new shim or launcher; it leaves
+`game\` - settings, pilots and all - alone unless given `--fresh-game`.
+
 ## The launcher
 
 `launcher\Firestorm Launcher.cmd` (or `python launcher/fslauncher.py
---game C:\path\to\MW4`) opens a window for setting a PC up and starting it:
+--game C:\path\to\MW4`) opens a window for setting a PC up and starting it.
+It runs both games: the switch under the title plate picks **Firestorm** or
+**BattleTech 3.0** - the 1990s pod on battlepod's emulator, with its own
+*Battle*, *Display* and *Controls* pages and a live operator's view
+([docs/BATTLETECH3.md](docs/BATTLETECH3.md)). For Firestorm:
 
 - **This PC** - a pod, the console, or both on one PC; the game folder, the
   network addresses, monitors and gamepads it sees.
@@ -53,9 +81,28 @@ holds `ddraw.dll` open and the copy fails.
 - **Launch** - start this PC's role, stop everything, or a test match on this
   PC; what is running, and the logs.
 
+- **MFD boards** - the cockpit's MFD screens (`firmware/esp32-mfd`): find
+  the boards on the serial ports, tell each which MFD it is (it keeps it),
+  and loop a test picture on all of them - each MFD's page drawn by the
+  launcher (`launcher/mfdtest.py`), or four seconds recorded from the game's
+  own MFDs while a mission streams them (kept in `profiles\mfd-test`).
+  Its *Bridge* card runs battlepod's `tools/bridge.py` for the boards given
+  an MFD: by default it starts with the pod (and with a test match), takes
+  the game's MFD stream when *The game streams its MFD pictures* is ticked,
+  and stops with *Stop*. It is a program of its own, logging to
+  `bridge.log` beside the game, so it runs on when the launcher's window
+  closes. Finding boards, test pictures and recording stop it, as they need
+  the same serial ports (recording starts it again after).
 - **Pilots** - the roster of profiles (a callsign of up to 15 characters, a
   'Mech and variant, notes), kept on the console; there the operator seats
   pilots in pods, and on a pod a player picks themselves and *Sit here*.
+  Each pilot's rank and career - matches, wins, kills, deaths, score.
+- **Leaderboards** - every pilot's standing, for all time or a recent
+  period, the best of it, and the latest matches. Each pod's launcher sends
+  its finished matches (the records the battle report is printed from) to
+  the console's, which keeps the careers; ranks come from experience, and
+  the pod's plasma sign shows a pilot's rank above their name
+  ([docs/CAREERS.md](docs/CAREERS.md)).
 
 It is dressed as the BattleTech Console - hazard stripes, black panels ruled
 in white, steel pills - in the game's own fonts (Bank Gothic, DIN), and shows
@@ -165,6 +212,23 @@ The mouse is left free for this: a pod has no mouse, and the game would
 otherwise confine and recentre the cursor all mission. Scroll Lock gives it
 back to the game.
 
+**USB controllers** - the cockpit's own throttle, stick and pedals, or a
+flight stick - any game controller Windows knows, several at once
+(`shim.ini` `[joy]`, or the launcher's Controls page, which shows them live
+and learns an axis or button as you move it). The cockpit's own boards,
+`firmware/rp2040-controls`, are mapped with no setup: *Firestorm Throttle*
+(the lever, the throttle and panic buttons), *Firestorm Stick* (twist, aim,
+four buttons, the hat) and *Firestorm Pedals*. Otherwise each axis -
+`throttle`, `pedal_left`, `pedal_right`, `stick_x`, `stick_y` - is
+`CONTROLLER.AXIS`, the controller named by its USB ids (`2E8A:1001`), part of
+its name, or `#n`, the axis X Y Z R U or V, a `-` in front to reverse it; any
+action is `CONTROLLER.Bn` or `CONTROLLER.HatUp` (`HatDown`, `HatLeft`,
+`HatRight`); `deadzone` (percent, default 4), `enabled = 0`. The lever takes
+over from the throttle keys whenever it moves. The game calibrates the
+throttle and pedals from what it sees each mission, so the shim shows it them
+at rest for half a second whenever it starts over: a lever left open, or a
+foot on a pedal, does not become the new "closed" or "rest".
+
 **A gamepad** (any XInput pad):
 
 | | |
@@ -191,7 +255,8 @@ back to the game.
 | F1-F4, F5-F8 | the selected MFD's top and bottom soft keys, left to right |
 | F9 / F10 | select the previous / next MFD (its title says `[F1-F8]`) |
 | Ctrl+F1-F6, Shift+F1-F6 | the radar's top and bottom buttons |
-| F11, F12 | throttle button (0x3F), panic button (0x3E) |
+| F11, F12 | throttle button (0x3F: reverse while held), panic button (0x3E) |
+| arrow keys | the stick's hat, looking round while held: up down (0x42), down behind (0x41), left (0x44), right (0x43) |
 | Scroll Lock | free the mouse / give it to the game |
 
 These, and the pad's buttons above, are defaults: every action can be bound
@@ -202,7 +267,9 @@ DDown DLeft DRight) - or in the launcher. The actions: `throttle_up`,
 `throttle_down`, `throttle_full`, `throttle_zero`, `pedal_left`,
 `pedal_right`, `twist_left`, `twist_right`, `aim_up`, `aim_down`, `fire1`,
 `fire2`, `fire3`, `fire_all`, `throttle_button`, `panic`, `mfd_prev`,
-`mfd_next`, `mouse`. The MFD and radar soft keys (F1-F8, Ctrl/Shift+F1-F6)
+`mfd_next`, `mouse`, `hat_up`, `hat_down`, `hat_left`, `hat_right`,
+`button4` (the stick's fourth button, 0x45, which this game ignores). The
+MFD and radar soft keys (F1-F8, Ctrl/Shift+F1-F6)
 are the panel and stay where they are.
 
 **Anything else** - a test script today, a real cockpit's controls tomorrow -
@@ -237,7 +304,8 @@ bridge started mid-mission lights its keys at once.
 **The MFD pictures, to modules.** With `[stream] enable = 1` the shim also
 serves the five MFD pictures, exactly as the game drew them, on a local TCP
 port (9110); the same bridge takes them to modules with a screen - the
-ESP32-S3 MFDs to come, or `tools/mfdrecv.py --all` in five windows today:
+ESP32-S3 MFD boards (`firmware/esp32-mfd`; the launcher's MFD boards page
+starts the bridge for them), or `tools/mfdrecv.py --all` in five windows:
 
 ```
 shim.ini:   [stream]
@@ -258,11 +326,37 @@ The main view's size is `options.ini`'s `screenwidth`/`screenheight` (and
 800x600. The game knows five mission sizes, all 4:3: 640x480, 800x600,
 1024x768, 1280x1024 and 1600x1200 - the options loader turns the width into
 one of five (`0x53A6A8`) and the size is made from that (`0x556965`); any
-other width is ignored and 800x600 kept. Wider shapes are being worked on:
-[docs/WIDESCREEN.md](docs/WIDESCREEN.md). 1600x1200 runs well on a modern card -
-at `bitdepth=16`: at 32 the MFD device can no longer make its surfaces
-(out of memory, `8007000E`) and the MFDs stay black. On a wide screen,
-`[main] fullscreen = 1` fills it with the view centred between black bars. The console's menus are 800x600 whatever is set.
+other width would be ignored and 800x600 kept - so for any other size
+(1920x1080, 2560x1080 ...) the shim rewrites the game's five mission sizes
+to it, in memory, and offers it as a display mode: the mission runs at that
+size.
+
+At a wide size the cockpit's view is **widened, not stretched** (Hor+): the
+shim keeps the 4:3 view's height and makes it as wide as the window, so 16:9
+sees 75 degrees across instead of 60 and 21:9 about 92. The cockpit frame is
+3D and widens with it; the 2D HUD (reticle, weapon groups, messages) is drawn
+at its own 4:3 shape in the middle, and the target's box stays on the target
+(`[main] hud_4x3`). Direct3D draws nothing wider than 2048 here - wider, the game stops
+with "No software rasterizer available" - so a larger size is drawn at its
+shape within 2048 (2560x1080 as 2048x864) and scaled up to the window.
+[docs/WIDESCREEN.md](docs/WIDESCREEN.md) has how.
+
+1600x1200 runs well on a modern card - at `bitdepth=16`: at 32 the MFD
+device can no longer make its surfaces (out of memory, `8007000E`) and the
+MFDs stay black. `[main] fullscreen = 1` fills a monitor; with `keep_aspect`
+a view of another shape sits between black bars. The console's menus are
+800x600 whatever is set.
+
+**Each copy keeps its own `options.ini`.** MW4 rewrites `options.ini` as it
+starts, with only the sections that copy uses: a pod drops `[graphics
+options]` - its screen size - and on one PC the console and pod share the
+file. The arcade never noticed: each pod's `postinstall.bat` copied
+`options-game.ini` over it. So the shim does the same: each copy (pod,
+console) reads and rewrites `mw4files\<role>\options.ini`, copied afresh
+from `options.ini` as it starts - and mw4print, whose report layout
+(`[battle tech print]`) the console's rewrite drops, has
+`mw4files\ctcl1\options-mw4print.ini`. Edit `options.ini` (or use
+the launcher); the copies are the game's.
 
 ## shim.ini
 
@@ -273,12 +367,18 @@ Optional, beside the game. A section can be specialised by role -
 |---|---|---|---|
 | `main` | `x`, `y`, `w`, `h` | 0, 0, mode | the main view's window |
 | `main` | `fullscreen`, `monitor` | 0, 1 | borderless over a whole monitor (1 the primary, 2 the next...) |
-| `main` | `keep_aspect` | 1 | draw the view at its own 4:3 shape, with bars, whatever the window's shape |
+| `main` | `keep_aspect` | 1 | draw the view at its own shape, with bars, whatever the window's shape |
+| `main` | `widen` | 1 | at a size that is not 4:3, widen the cockpit's view to fit (0: stretch it) |
+| `main` | `widen_mask` | 2 | which cameras `widen` changes, by who sets them up: 2 the cockpit's, 1 the MechLab's |
+| `main` | `hud_4x3` | 1 | at a size that is not 4:3, draw the HUD at its own 4:3 shape in the middle (the target's box stays on the target); 0: stretched |
+| `main` | `max_size` | 2048 | the largest side Direct3D draws; a larger view is drawn at its shape within it and scaled up |
 | `main` | `gpu_present` | 1 | the card blits the view to the window (no read-back); 0 reads each frame back and draws it with GDI, as the MFDs and radar are |
 | `mfd1`..`mfd5`, `radar`, `mfd_surface` | `x`, `y`, `w`, `h`, `borderless` | on the second monitor | each cockpit window |
 | `mfd` | `tiles` | `L:R,L:G,L:B,R:R,R:G` | which part of the 1280x480 MFD surface each MFD shows: head `L`/`R`, then channel `R`/`G`/`B`, or `C` for the head in colour |
 | `mfd` | `tint` | `FFFFFF` | colour of the monochrome MFDs, e.g. `40FF60` for green phosphor |
 | `mfd` | `show_surface` | 1 | a window with the whole 1280x480 surface, for checking `tiles` |
+| `mfd` | `hide_numbers` | 1 | MFD 1's top keys: leave out the slot number ("1".."4") where the game writes a pilot's name over it |
+| `mfd` | `target_mech` | 1 | MFD 4's target page: the target's mech and variant ("Stock" for a stock mech) in the empty box at the bottom left |
 | `mfd` | `layout` | `windows` | `wall`: all five MFDs in one window, `[mfd_wall]` `cols` across (default 5) - for a video-wall controller or one wide screen |
 | `mfd_wall` | `x`, `y`, `w`, `h`, `borderless`, `cols` | | the wall's window |
 | `radar` | `rotate` | 0 | 90 or 270: the radar upright, for a monitor mounted portrait as the pod's was - the game draws it on its side |
@@ -296,6 +396,7 @@ Optional, beside the game. A section can be specialised by role -
 | `pad` | `enabled`, `index`, `deadzone`, `invert_y` | 1, 0, 7000, 0 | the gamepad |
 | `plasma` | `enabled`, `port` | 1 with `-tmfds`, 2 | the virtual plasma sign on `\\.\com<port>` |
 | `plasma` | `x`, `y`, `w`, `h`, `borderless` | on the second monitor, 672x192 | the sign's window |
+| `plasma` | `ranks` | 1 | the pilot's rank on the sign's top row, from `profiles\ranks.ini` ([docs/CAREERS.md](docs/CAREERS.md)) |
 | `print` | `to_file` | for a printer named \*PDF\* or \*XPS\* | 1: give each battle report a file of its own instead of the printer asking where; 0: never |
 | `print` | `folder` | `reports` beside the game | where those files go |
 | `shim` | `pod_files` | `ctcl2` | the `mw4files` folder a `\\pod\mw4files` path means |
@@ -303,7 +404,8 @@ Optional, beside the game. A section can be specialised by role -
 | `shim` | `allow_multiple` | 1 | let a console and a pod run on one PC |
 | `shim` | `private_ctcl` | console only | keep this copy's CTCL state to itself |
 | `shim` | `real_adapters` | 0 | also offer the real monitors as adapters |
-| `shim` | `snapshots` | 1 | write `snap-*.bmp`: at frames 120 and 1200, and whenever a file named `snap` appears in the game directory |
+| `shim` | `watch` | | a debugging aid: hex address of a game variable; once the game runs, every write to it is logged with the code that made it |
+| `shim` | `snapshots` | 0 | also write `snap-*.bmp` of every display at frames 120 and 1200 of each run; asked for - the control port's `snap`, or a file named `snap` appearing in the game directory - they are always written |
 | `stream` | `enable` | 0 | serve the MFD pictures to `tools/bridge.py` ([MFD streaming](../docs/MFD_STREAMING_PROTOCOL.md)) |
 | `stream` | `port` | 9110 | its TCP port, on 127.0.0.1 |
 | `stream` | `displays` | `1,2,3,4,5` | which MFDs (numbered as `[mfd] tiles` and the windows) |
@@ -342,6 +444,12 @@ Optional, beside the game. A section can be specialised by role -
   after a mission their rank and score - is drawn in its own window from
   what the game sends to COM2 (docs/RIO.md, *The plasma sign*).
 - Battle reports print (below).
+- Wide main views (16:9, 21:9 ...): the mission runs at the size and the
+  cockpit's view is widened to fit, not stretched (*Resolution*).
+- The console's own clicks - filling in its slots from the seated pilots,
+  the control port's `click` - work with its window behind the pod's: the
+  shim hands them to GameOS's DirectInput mouse too, which a window behind
+  another is not given.
 
 **Not yet**
 

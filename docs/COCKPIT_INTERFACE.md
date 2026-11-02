@@ -259,9 +259,13 @@ on the panel. **documented**; its game use is **unknown**.
 
 ### The keyboard, today
 
-`live_key` in `src/battlepod.c`: W/S throttle in eighths (`A0`), A/D stick
-(`A1`/`A2`, and the first press also sends `33` and `31`), space `A5`, T `40`,
-L `20`. Nothing else is bound, and there is no joystick support. **code**
+`live_key` in `src/battlepod.c`: W/S throttle in eighths (`A0`), X closes
+it, A/D stick (`A1`/`A2`, and the first press also sends `33` and `31`),
+space `A5`, F `A6`, G `A7`, Enter all three, Q/E torso `51`/`1C`, C `28`,
+R/V `24`/`2C`, Z and + `3D`, - `43`, T `40`, L `20`, F1-F3 `00`/`04`/`08`.
+A gamepad (`live_pad`) and USB controllers through winmm (`live_joy`,
+`battletech.ini [joy]`, firestorm/docs/BATTLETECH3.md) send the same
+reports. **code**
 
 ### Toggle switches
 

@@ -180,11 +180,15 @@ The bridge never decodes pixels. For each module it tracks:
 - **want key** - it has just said `HELLO`, sent `SYNC`, or been skipped.
   It gets nothing until the next key frame, which the bridge asks the shim
   for (`SYNC`, at most five times a second per display);
-- **in flight** - updates sent but not yet acknowledged. At most **2**: if
-  a new update finds a module with 2 in flight, or more than 64 KB of
-  pictures queued for it, the bridge skips it to the next key frame instead
-  of queueing. A slow module therefore falls back to fewer frames rather than
-  to a growing delay. An acknowledgement missing for a second is written off.
+- **in flight** - updates sent but not yet acknowledged, by frame number.
+  At most **3**: if a new update finds a module with 3 in flight, or more
+  than 64 KB of pictures queued for it, the bridge skips it to the next key
+  frame instead of queueing. A slow module therefore falls back to fewer
+  frames rather than to a growing delay. Acknowledgements are cumulative:
+  `FRAME_ACK` for frame *n* settles every frame up to *n*, so one lost on the
+  link is made good by the next (with a plain count, one lost acknowledgement
+  held the window shut until the timeout, a 3 s freeze). None for a second,
+  and everything in flight is written off.
 
 Control messages (`LED`, `TEXT`, `PING` ...) go ahead of `FRAME`s in each
 module's queue, at message boundaries: a lamp waits for at most the one part
@@ -210,7 +214,9 @@ known not to be. `tools/test_mfdstream.py` checks every row of this table.
 ## Transport
 
 - **USB CDC serial** (a real module) or **TCP** (`mfdrecv.py`, port 5181):
-  the module protocol's transports, unchanged.
+  the module protocol's transports, unchanged. A module behind a USB-serial
+  chip - the Elecrow CrowPanel 7" with its CH340 (`firestorm/firmware/esp32-mfd`)
+  - runs its UART at 2 Mbaud, about 195 KB/s (`bridge.py --serial COM8@2000000`).
 - **Shim to bridge**: TCP on `127.0.0.1`, `[stream] port` (default 9110),
   one client at a time.
 - Bandwidth per module, measured (the implementation document has the

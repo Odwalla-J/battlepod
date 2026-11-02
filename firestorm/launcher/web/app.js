@@ -27,19 +27,21 @@ function show(page) {
   $$(".page").forEach(p => p.classList.toggle("on", p.id === "page-" + page));
   if (page === "launch") refreshRun();
   if (page === "pilots") loadPilots();
+  if (page === "mfds") loadMfd();
+  if (page === "leaderboards") loadBoards();
 }
 window.addEventListener("hashchange", () => show(location.hash.slice(1) || "pc"));
 
 // ------------------------------------------------------------ simple fields
 const TEXT = ["mode", "bitdepth", "main_monitor", "main_x", "main_y", "main_w", "main_h", "mfd_layout", "mfd_tint",
   "wall_cols", "radar_rotate", "pad_index", "pad_deadzone", "ramp_ms", "capture_mouse", "vsync", "max_fps",
-  "print_to_file", "print_folder", "console_addr"];
+  "print_to_file", "print_folder", "console_addr", "joy_deadzone"];
 const CHECK = ["keep_aspect", "show_surface", "plasma", "pad_enabled", "pad_invert_y", "gpu_present", "frame_stats",
-  "start_printer"];
+  "start_printer", "joy_enabled"];
 
 function fillFields() {
   const opts = (sel, items) => { $(sel).innerHTML = items.map(([v, t]) => `<option value="${v}">${t}</option>`).join(""); };
-  opts("#mode", S.modes.map(m => [m, m.replace("x", " x ")]));
+  opts("#mode", S.modes);
   const mons = S.monitors.map(m => [m.n, `Monitor ${m.n}${m.primary ? " (main)" : ""} - ${m.w} x ${m.h}`]);
   opts("#main_monitor", mons);
   opts("#arrange_mon", mons);
@@ -53,11 +55,19 @@ function fillFields() {
 }
 function labels() {
   $("#pad_deadzone_v").textContent = Math.round(V.pad_deadzone / 327.67) + "%";
+  $("#joy_deadzone_v").textContent = V.joy_deadzone + "%";
   $("#ramp_ms_v").textContent = V.ramp_ms == 0 ? "off: full at once" : (V.ramp_ms / 1000).toFixed(2) + " s";
   const full = V.main_fullscreen;
   $$(".only-full").forEach(e => e.style.display = full ? "" : "none");
   $$(".only-win").forEach(e => e.style.display = full ? "none" : "");
   $$(".only-wall").forEach(e => e.style.display = V.mfd_layout === "wall" ? "" : "none");
+  // The view's shape against the window's: a wide view in a 4:3 window is a thin band.
+  const [gw, gh] = V.mode.split("x").map(Number), r = mainRect();
+  const off = Math.abs((r.w / r.h) / (gw / gh) - 1) > 0.05;
+  $("#shape_hint").textContent = !off ? "" : V.main_fullscreen
+    ? `The monitor is ${r.w} x ${r.h}, a different shape from the view: ${V.keep_aspect ? "black bars at the sides or top and bottom" : "the view is stretched"}.`
+    : `The window (${r.w} x ${r.h}) is a different shape from the view (${gw} x ${gh}): ${V.keep_aspect ? "black bars fill the rest" : "the view is stretched"}. ` +
+      `A window of ${r.w} x ${Math.round(r.w * gh / gw)} fits it, or show it full screen.`;
   const seen = S.pads.length ? `Connected: ${S.pads.map(i => i + 1).join(", ")}` : "No pad connected";
   $("#pad_seen").textContent = seen;
   const lead = {
@@ -75,7 +85,7 @@ function wireFields() {
     const el = $("#" + id); if (!el) continue;
     el.addEventListener("input", () => { V[id] = el.value; labels(); renderWindows(); touch(); });
   }
-  for (const id of CHECK) $("#" + id).addEventListener("change", e => { V[id] = e.target.checked; touch(); });
+  for (const id of CHECK) $("#" + id).addEventListener("change", e => { V[id] = e.target.checked; labels(); touch(); });
   $("#main_fullscreen").addEventListener("change", e => { V.main_fullscreen = e.target.value === "1"; labels(); touch(); });
   $$("input[name=role]").forEach(r => r.addEventListener("change", () => { V.role = r.value; labels(); touch(); }));
 }
@@ -204,7 +214,9 @@ function renderBinds() {
     const chips = keys.map((k, j) => `<span class="key" data-i="${i}" data-j="${j}" title="Remove">${k}</span>`).join("");
     const add = keys.length < 4 ? `<span class="key add${listening === i ? " listening" : ""}" data-add="${i}">${listening === i ? "press a key" : "+"}</span>` : "";
     const opts = S.pad_buttons.map(p => `<option ${p === b.pad ? "selected" : ""}>${p}</option>`).join("");
-    return `<tr><td>${b.label}</td><td><div class="keys">${chips}${add}</div></td><td><select data-pad="${i}">${opts}</select></td></tr>`;
+    const joy = b.joy ? `<span class="key" data-jclr="${i}" title="Remove">${joyLabel(b.joy)}</span>`
+      : `<span class="key add${jlearn && jlearn.i === i ? " listening" : ""}" data-jlearn="${i}">${jlearn && jlearn.i === i ? "press it" : "+"}</span>`;
+    return `<tr><td>${b.label}</td><td><div class="keys">${chips}${add}</div></td><td><select data-pad="${i}">${opts}</select></td><td><div class="keys">${joy}</div></td></tr>`;
   }).join("");
   $$(".key[data-j]", tb).forEach(el => el.addEventListener("click", () => {
     const b = V.binds[el.dataset.i];
@@ -215,7 +227,120 @@ function renderBinds() {
   }));
   $$(".key[data-add]", tb).forEach(el => el.addEventListener("click", () => { listening = +el.dataset.add; renderBinds(); }));
   $$("select[data-pad]", tb).forEach(el => el.addEventListener("change", () => { V.binds[el.dataset.pad].pad = el.value; touch(); }));
+  $$(".key[data-jclr]", tb).forEach(el => el.addEventListener("click", () => { V.binds[el.dataset.jclr].joy = ""; renderBinds(); touch(); }));
+  $$(".key[data-jlearn]", tb).forEach(el => el.addEventListener("click", () => {
+    jlearn = { kind: "bind", i: +el.dataset.jlearn, base: snapshot() }; renderBinds();
+    status("Press the controller's button, or push its hat (Esc cancels)", true);
+  }));
 }
+
+// ------------------------------------------------------------ USB controllers
+// Read live from /api/joy while the Controls page is open; an input is named
+// as the shim's [joy] takes it: CONTROLLER.AXIS, CONTROLLER.Bn, CONTROLLER.HatUp.
+const JOY_AXES = [
+  ["throttle", "Throttle lever", "push the throttle from closed to fully open"],
+  ["pedal_left", "Left pedal", "press the left pedal all the way down"],
+  ["pedal_right", "Right pedal", "press the right pedal all the way down"],
+  ["stick_x", "Stick left / right (torso twist)", "push the stick to the right"],
+  ["stick_y", "Stick forward / back (aim)", "pull the stick back towards you"],
+];
+let J = [];            // the controllers, as last read
+let jlearn = null;     // being learned: { kind: "axis", key } or { kind: "bind", i }, with the starting state
+const devSpec = d => J.filter(x => x.ids === d.ids).length > 1 ? "#" + d.n : d.ids;
+function findDev(spec) {
+  if (!spec) return null;
+  if (spec[0] === "#") return J.find(d => d.n === +spec.slice(1));
+  if (/^[0-9a-f]{4}:[0-9a-f]{4}$/i.test(spec)) return J.find(d => d.ids.toUpperCase() === spec.toUpperCase());
+  return J.find(d => d.name.toLowerCase().includes(spec.toLowerCase()));
+}
+function parseRef(s) {
+  s = (s || "").trim();
+  const neg = s.startsWith("-"); if (neg) s = s.slice(1);
+  const i = s.lastIndexOf(".");
+  return i < 0 ? null : { neg, dev: s.slice(0, i), input: s.slice(i + 1) };
+}
+function joyLabel(ref) {
+  const r = parseRef(ref); if (!r) return ref;
+  const d = findDev(r.dev);
+  const input = /^B\d+$/i.test(r.input) ? "button " + r.input.slice(1) : /^hat/i.test(r.input) ? "hat " + r.input.slice(3).toLowerCase() : r.input;
+  return `${d ? d.name : r.dev} ${input}${r.neg ? " (reversed)" : ""}`;
+}
+function axisNow(ref) {
+  const r = parseRef(ref); if (!r) return null;
+  const d = findDev(r.dev), a = r.input.toUpperCase();
+  if (!d || !(a in d.axes)) return null;
+  return r.neg ? 1000 - d.axes[a] : d.axes[a];
+}
+const snapshot = () => J.map(d => ({ n: d.n, axes: { ...d.axes }, buttons: [...d.buttons], hat: d.hat }));
+function hatDir(pov) {
+  if (pov === null || pov === undefined) return null;
+  return pov >= 31500 || pov <= 4500 ? "HatUp" : pov < 13500 ? "HatRight" : pov <= 22500 ? "HatDown" : "HatLeft";
+}
+function renderJoyRows() {
+  $("#joytable tbody").innerHTML = JOY_AXES.map(([k, label]) => `<tr>
+    <td>${label}</td>
+    <td><input data-jaxis="${k}" value="${V.joy_axes[k] || ""}" placeholder="not used"></td>
+    <td><span class="meter"><i id="jm-${k}" style="width:0"></i></span> <span class="hint" id="jn-${k}"></span></td>
+    <td><button class="btn ghost" data-jaxlearn="${k}">${jlearn && jlearn.key === k ? "Move it..." : "Learn"}</button></td></tr>`).join("");
+  $$("input[data-jaxis]").forEach(el => el.addEventListener("input", () => { V.joy_axes[el.dataset.jaxis] = el.value.trim(); touch(); }));
+  $$("button[data-jaxlearn]").forEach(el => el.addEventListener("click", () => {
+    const k = el.dataset.jaxlearn;
+    jlearn = { kind: "axis", key: k, base: snapshot() }; renderJoyRows();
+    status(`Now ${JOY_AXES.find(a => a[0] === k)[2]} (Esc cancels)`, true);
+  }));
+}
+function renderJoyDevs() {
+  $("#joy_devs").innerHTML = J.length ? J.map(d => `<div class="joydev"><b>${d.name}</b><span class="pill">${d.ids}</span><span class="hint">#${d.n}</span>
+    ${Object.entries(d.axes).map(([a, v]) => `<span class="joyaxis">${a} <span class="meter"><i style="width:${v / 10}%"></i></span></span>`).join("")}
+    ${Array.from({ length: Math.min(d.nbuttons, 32) }, (_, b) => `<span class="joybtn${d.buttons.includes(b + 1) ? " on" : ""}">${b + 1}</span>`).join("")}
+    ${d.has_hat ? `<span class="joybtn${d.hat !== null ? " on" : ""}">hat ${d.hat !== null ? hatDir(d.hat).slice(3).toLowerCase() : "-"}</span>` : ""}</div>`).join("")
+    : '<p class="hint">No USB controller connected.</p>';
+  for (const [k] of JOY_AXES) {
+    const v = axisNow(V.joy_axes[k]), m = $("#jm-" + k);
+    if (!m) continue;
+    m.style.width = v === null ? "0" : v / 10 + "%";
+    $("#jn-" + k).textContent = !V.joy_axes[k] ? "" : v === null ? "not connected" : Math.round(v / 10) + "%";
+  }
+}
+function learnStep() {
+  if (!jlearn) return;
+  if (jlearn.kind === "axis") {
+    let best = null;
+    for (const d of J) {
+      const b = jlearn.base.find(x => x.n === d.n); if (!b) continue;
+      for (const [a, v] of Object.entries(d.axes)) {
+        const delta = v - (b.axes[a] ?? v);
+        if (Math.abs(delta) > 350 && (!best || Math.abs(delta) > Math.abs(best.delta))) best = { d, a, delta };
+      }
+    }
+    if (!best) return;
+    const k = jlearn.key;
+    V.joy_axes[k] = (best.delta < 0 ? "-" : "") + devSpec(best.d) + "." + best.a;
+    jlearn = null; renderJoyRows(); touch();
+    status(`${JOY_AXES.find(a => a[0] === k)[1]}: ${joyLabel(V.joy_axes[k])} - unsaved`, true);
+    return;
+  }
+  for (const d of J) {
+    const b = jlearn.base.find(x => x.n === d.n); if (!b) continue;
+    const btn = d.buttons.find(x => !b.buttons.includes(x));
+    const hat = b.hat === null ? hatDir(d.hat) : null;
+    if (btn || hat) {
+      V.binds[jlearn.i].joy = devSpec(d) + "." + (btn ? "B" + btn : hat);
+      jlearn = null; renderBinds(); touch();
+      return;
+    }
+  }
+}
+async function pollJoy() {
+  if (!S || !$("#page-controls").classList.contains("on")) return;
+  try { J = (await api("/api/joy")).joysticks; } catch (e) { return; }
+  learnStep();
+  renderJoyDevs();
+}
+setInterval(pollJoy, 150);
+document.addEventListener("keydown", e => {
+  if (jlearn && e.code === "Escape") { jlearn = null; renderJoyRows(); renderBinds(); status("Cancelled", dirty); }
+});
 document.addEventListener("keydown", e => {
   if (listening === null) return;
   e.preventDefault();
@@ -271,7 +396,8 @@ async function load() {
   V = JSON.parse(JSON.stringify(S.settings));
   V.role = S.role;
   V.main_fullscreen = !!V.main_fullscreen;
-  fillFields(); renderPC(); renderWindows(); renderBinds(); renderTeslas(); drawMap();
+  J = S.joysticks || [];
+  fillFields(); renderPC(); renderWindows(); renderBinds(); renderJoyRows(); renderJoyDevs(); renderTeslas(); drawMap();
   if (S.mechs && !$("#ed-name").value) edit(null);
   dirty = false;
   status(S.found ? "Ready." : "No MW4.exe in the game folder - start the launcher with --game.", !S.found);
@@ -286,7 +412,7 @@ $("#save").addEventListener("click", save);
 $("#revert").addEventListener("click", load);
 $("#arrange").addEventListener("click", arrange);
 $("#binds_reset").addEventListener("click", () => {
-  V.binds.forEach(b => { b.keys = b.default_keys; b.pad = b.default_pad; }); renderBinds(); touch();
+  V.binds.forEach(b => { b.keys = b.default_keys; b.pad = b.default_pad; b.joy = ""; }); renderBinds(); touch();
 });
 $("#tesla_add").addEventListener("click", () => {
   V.teslas.push({ ip: S.addresses[0] || "", name: "Pilot" + (V.teslas.length + 1), enabled: true, mark: "" });
@@ -304,6 +430,159 @@ $("#stop").addEventListener("click", () => start("stop"));
 $("#test").addEventListener("click", () => start("test", { pilot: $("#test_pilot").value }));
 $("#logrole").addEventListener("change", refreshRun);
 window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+
+// ------------------------------------------------------------ MFD boards
+// Through /api/mfd (launcher/mfdtest.py): find the boards on the serial
+// ports, name each by its MFD, loop a test picture on them.
+let M = null;          // the MFD boards' state, as last read
+function renderMfd() {
+  if (!M) return;
+  const busy = $("#page-mfds").classList.contains("busy");
+  const counts = {};
+  M.boards.forEach(b => { if (b.mfd) counts[b.mfd] = (counts[b.mfd] || 0) + 1; });
+  $("#mfdtable tbody").innerHTML = M.boards.length ? M.boards.map(b => `<tr>
+      <td>${b.port}</td><td class="mono">${b.uid}</td><td class="hint">${b.firmware}</td>
+      <td><select data-mfdport="${b.port}" ${busy ? "disabled" : ""}>
+        <option value="0">-</option>${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${b.mfd === n ? "selected" : ""}>MFD ${n}</option>`).join("")}
+      </select></td></tr>`).join("")
+    : `<tr><td colspan="4" class="hint">${M.available ? "No boards found yet: Find boards." : "This launcher has no pyserial: MFD boards cannot be reached from it."}</td></tr>`;
+  $$("select[data-mfdport]").forEach(el => el.addEventListener("change", () =>
+    mfdCall("/api/mfd/assign", { port: el.dataset.mfdport, mfd: +el.value }, `Telling ${el.dataset.mfdport} it is ${+el.value ? "MFD " + el.value : "no MFD"}...`)));
+  $("#mfd_test").textContent = M.testing ? "Stop test pictures" : "Show test pictures";
+  $("#mfd_stream").checked = M.stream;
+  $("#mfd_bridge").textContent = M.bridge ? "Stop the bridge" : "Start the bridge";
+  $("#mfd_bridge").disabled = busy || (!M.bridge && (!M.bridge_found || !M.bridge_ports.length));
+  $("#mfd_bridge_auto").checked = M.bridge_auto;
+  $("#mfd_bridge_state").textContent = !M.bridge_found ? "The bridge (bridge.py) is not with this launcher."
+    : !M.bridge_ports.length ? "No board is an MFD yet: find the boards and give each its MFD."
+    : (M.bridge ? "Running, on " : "Stopped. It opens ") + M.bridge_ports.join(", ") + "."
+      + (M.stream ? "" : " The game does not stream its MFDs yet: tick the box under Test pictures.");
+  $("#mfd_bridge_log").textContent = (M.bridge_log || []).join("\n");
+  $("#mfd_rec_state").textContent = M.recorded.length
+    ? `Recorded from the game: MFD ${M.recorded.join(", ")}. The others are drawn.`
+    : "No recordings: every MFD's test picture is drawn.";
+  const missing = [1, 2, 3, 4, 5].filter(n => !counts[n]);
+  $("#mfd_hint").textContent = M.errors.length ? "Trouble: " + M.errors.join("; ")
+    : M.boards.length ? (missing.length ? `Not on a board yet: MFD ${missing.join(", ")}.` : "All five MFDs have a board.")
+    : "Finding boards briefly opens every serial port.";
+}
+async function mfdCall(path, body, doing) {
+  const page = $("#page-mfds");
+  page.classList.add("busy");
+  status(doing, true);
+  $$("#page-mfds button").forEach(b => b.disabled = true);
+  try {
+    const r = await api(path, body || {});
+    if (r.error) status("Error: " + r.error, true, true);
+    else { M = r; status(r.message || "Done.", dirty); }
+  } finally {
+    page.classList.remove("busy");
+    $$("#page-mfds button").forEach(b => b.disabled = false);
+    renderMfd();
+  }
+}
+async function loadMfd() {
+  M = await api("/api/mfd");
+  renderMfd();
+}
+$("#mfd_scan").addEventListener("click", () => mfdCall("/api/mfd/scan", {}, "Looking for MFD boards..."));
+$("#mfd_test").addEventListener("click", () => mfdCall("/api/mfd/test", { on: !(M && M.testing) },
+  M && M.testing ? "Stopping the test pictures..." : "Starting the test pictures..."));
+$("#mfd_record").addEventListener("click", () => mfdCall("/api/mfd/record", { seconds: 4 }, "Recording the MFDs from the game..."));
+$("#mfd_forget").addEventListener("click", () => mfdCall("/api/mfd/forget", {}, "Deleting the recordings..."));
+$("#mfd_stream").addEventListener("change", e => mfdCall("/api/mfd/stream", { on: e.target.checked }, "Saving..."));
+$("#mfd_bridge").addEventListener("click", () => mfdCall("/api/mfd/bridge", { on: !(M && M.bridge) },
+  M && M.bridge ? "Stopping the bridge..." : "Starting the bridge..."));
+$("#mfd_bridge_auto").addEventListener("change", e => mfdCall("/api/mfd/bridge", { auto: e.target.checked }, "Saving..."));
+
+// ------------------------------------------------------------ careers and leaderboards
+// Through /api/career (launcher/career.py): every pilot's matches, as the
+// pods report them to the console, summed into ranks and standings.
+const RANK_CLASS = r => r >= 9 ? "gen" : r >= 5 ? "off" : r >= 4 ? "vet" : r >= 1 ? "enl" : "";
+function rankBadge(c, always) {
+  if (!c || (!c.career_matches && !always)) return "";
+  const pips = c.rank >= 5 ? Math.min(c.rank - 4, 5) : 0;
+  return ` <span class="rk ${RANK_CLASS(c.rank)}" title="${esc(c.title)}">${esc(c.short)}${"<i class=\"pip\"></i>".repeat(pips)}</span>`;
+}
+function careerOf(id) { return P && P.careers ? P.careers[id] : null; }
+const num = v => (v ?? 0).toLocaleString();
+function rankBar(c) {
+  if (!c.next) return `<div class="bar"><i style="width:100%"></i></div><div class="bar-note">The highest rank</div>`;
+  return `<div class="bar"><i style="width:${Math.round(c.progress * 100)}%"></i></div>
+    <div class="bar-note">${num(c.xp)} / ${num(c.next_xp)} experience to ${esc(c.next)}</div>`;
+}
+function renderCareer(p) {
+  const el = $("#ed-career"), c = p && careerOf(p.id);
+  el.hidden = !c;
+  if (!c) return;
+  el.innerHTML = `<div class="title">${rankBadge(c, true)} ${esc(c.title)}${c.veteran ? ` <span class="hint">veteran</span>` : ""}</div>
+    ${rankBar(c)}
+    <div class="stats">
+      <div><b>${num(c.matches)}</b><span>matches</span></div><div><b>${num(c.wins)}</b><span>wins</span></div>
+      <div><b>${num(c.kills)}</b><span>kills</span></div><div><b>${num(c.deaths)}</b><span>deaths</span></div>
+      <div><b>${num(c.score)}</b><span>total score</span></div><div><b>${c.best == null ? "-" : num(c.best)}</b><span>best match</span></div>
+      <div><b>${num(c.avg)}</b><span>average</span></div><div><b>${c.matches ? c.kd.toFixed(2) : "-"}</b><span>kills / death</span></div>
+    </div>`;
+}
+
+let LB = null;
+function sinceDate(v) {                // this PC's own calendar, as the records' times are
+  const d = new Date(), ymd = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+  if (v === "today") return ymd(d);
+  if (v === "week") { d.setDate(d.getDate() - 6); return ymd(d); }
+  if (v === "month") { d.setDate(1); return ymd(d); }
+  return "";
+}
+async function loadBoards() {
+  const since = sinceDate($("#lb-since").value);
+  const game = $("#lb-game").value, q = [since && "since=" + since, game && "game=" + game].filter(Boolean).join("&");
+  LB = await api("/api/career" + (q ? "?" + q : ""));
+  const err = $("#lb-error");
+  err.hidden = !LB.error;
+  if (LB.error) {
+    err.textContent = LB.error + " - careers live on the console; this pod reaches them through the console's launcher.";
+    return;
+  }
+  renderBoards();
+}
+function renderBoards() {
+  if (!LB || LB.error) return;
+  const key = $("#lb-sort").value;
+  const flown = LB.pilots.filter(c => c.matches);
+  const by = {
+    xp: c => [c.xp, c.score], score: c => [c.score, c.xp], kills: c => [c.kills, c.kd], kd: c => [c.kd, c.kills],
+    wins: c => [c.wins, c.score], best: c => [c.best ?? -1e9, c.score], avg: c => [c.avg, c.matches],
+    matches: c => [c.matches, c.score],
+  }[key];
+  const cmp = (a, b) => { const x = by(a), y = by(b); return y[0] - x[0] || y[1] - x[1] || a.name.localeCompare(b.name); };
+  const rows = flown.slice().sort(cmp);
+  // The best of the period, at the top.
+  const top = (f, min) => flown.filter(c => c.matches >= (min || 1)).slice().sort((a, b) => f(b) - f(a))[0];
+  const card = (k, c, v) => `<div><div class="k">${k}</div><div class="v">${c ? v(c) : "-"}</div><div class="w">${c ? esc(c.name) + rankBadge(c) : "No matches yet"}</div></div>`;
+  $("#lb-best").innerHTML =
+    card("Highest rank", top(c => c.xp), c => esc(c.title)) +
+    card("Most kills", top(c => c.kills), c => num(c.kills)) +
+    card("Best match", top(c => c.best ?? -1e9), c => num(c.best)) +
+    card("Kills per death (3+ matches)", top(c => c.kd, 3), c => c.kd.toFixed(2));
+  $("#lb-table tbody").innerHTML = rows.map((c, i) => `<tr>
+      <td class="pos">${i + 1}</td>
+      <td class="who">${esc(c.name)}${c.profile ? "" : ` <span class="hint" title="Not on the roster">guest</span>`}</td>
+      <td class="rank">${rankBadge(c, true)} ${esc(c.title)}${c.next ? `<div class="bar"><i style="width:${Math.round(c.progress * 100)}%"></i></div>` : ""}</td>
+      <td class="n">${num(c.matches)}</td><td class="n">${num(c.wins)}</td><td class="n">${num(c.kills)}</td><td class="n">${num(c.deaths)}</td>
+      <td class="n">${c.kd.toFixed(2)}</td><td class="n">${num(c.score)}</td><td class="n">${c.best == null ? "-" : num(c.best)}</td>
+      <td class="n">${num(c.avg)}</td><td>${esc(c.mech)}</td><td class="hint">${esc(c.last)}</td></tr>`).join("")
+    || `<tr><td colspan="13" class="hint">No matches ${LB.since ? "in this time" : "yet"}: they appear here once a pod has flown one and its launcher has passed it on.</td></tr>`;
+  const place = m => m.of > 1 ? `${m.place} of ${m.of}` : "-";
+  $("#lb-recent tbody").innerHTML = (LB.recent || []).map(m => `<tr>
+      <td class="hint">${esc(m.time)}</td><td>${esc(m.name)}</td><td>${esc(m.mission || m.shown)}${m.game ? ` <span class="hint">${esc(m.game)}</span>` : ""}</td>
+      <td>${esc(m.mech)}</td><td class="n">${num(m.score)}</td><td class="n">${m.kills} / ${m.deaths}</td><td class="n">${place(m)}</td></tr>`).join("")
+    || `<tr><td colspan="7" class="hint">None yet.</td></tr>`;
+  $("#lb-ranks").innerHTML = `<div class="ladder">` + LB.ranks.map(r =>
+    `<span>${rankBadge({ rank: r.rank, short: r.short, title: r.title }, true)}</span><span>${esc(r.title)}</span><span class="x">${r.rank ? num(r.xp) : "no matches"}</span>`).join("") + `</div>`;
+}
+$("#lb-since").addEventListener("change", loadBoards);
+$("#lb-game").addEventListener("change", loadBoards);
+$("#lb-sort").addEventListener("change", renderBoards);
 
 // Keep the server alive while the window is open; refresh the launch page.
 setInterval(() => fetch("/api/ping").catch(() => {}), 2000);
@@ -425,7 +704,7 @@ function renderRoster() {
     else action = "";
     return `<div class="pilot${p.id === selected ? " sel" : ""}" data-id="${p.id}">
       <div class="avatar${mechImage(p.chassis) ? "" : " none"}" style="${mechImage(p.chassis) ? `background-image:url('${mechImage(p.chassis)}')` : ""}"></div>
-      <div class="who"><div class="nm">${esc(p.name)}</div><div class="mc">${esc(mechLabel(p))}</div></div>
+      <div class="who"><div class="nm">${esc(p.name)}${rankBadge(careerOf(p.id))}</div><div class="mc">${esc(mechLabel(p))}</div></div>
       ${seat ? `<div class="seat-tag">${here ? "in this pod" : "in " + esc(podName(seat[0]))}</div>` : ""}
       ${action}</div>`;
   }).join("") || `<div class="empty">No pilots yet - make the first on the right.</div>`;
@@ -516,6 +795,7 @@ function edit(p) {
   fillVariants(p ? p.variant : "");
   $("#ed-notes").value = p ? p.notes || "" : "";
   $("#ed-delete").disabled = !p;
+  renderCareer(p);
 }
 function wirePilots() {
   $("#pilot_filter").addEventListener("input", () => P && renderRoster());
