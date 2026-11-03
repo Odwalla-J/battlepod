@@ -31,16 +31,17 @@ checkpoints (`make conformance`).
 |---|---|
 | Boots its own image set to the main game loop | yes |
 | Renderer, audio and Amiga boards | stubbed; the renderer's display lists are read and drawn in C |
-| Main view, from the pod's own frames | yes: Mechs posed and walking, ground and shadows, the pod's sky |
-| Head-up display | the reticle and the drop bay; text readouts not yet |
-| Explosions, day, dusk and night skies | yes; night's lighting on the ground not yet |
+| Main view, from the pod's own frames | yes: Mechs posed and walking in their paint, buildings and terrain at the detail their distance picks, ground and shadows, the pod's sky |
+| Head-up display | the reticle and the drop bay - all the renderer is sent; the text readouts are not in its stream |
+| Explosions, day, dusk and night | yes: skies, ground colour and light from the environment, searchlights |
 | Panel: lamps, displays, bar graphs (Remote I/O) | yes, one window per device |
 | Keyboard, gamepad and USB controllers as throttle, stick, triggers, torso, view | yes |
 | A launcher: pick 'Mech, map, time of day, CPU pilots; window, controls; operator's view; careers | yes (`firestorm/launcher`, the BattleTech 3.0 pages) |
 | Several pods over UDP, CPU pilots, the operator's view | yes (`tools/hub.py`) |
 | Headless video, `--headless --record out.mp4` | yes |
 | The panel's state and a radar under the main view (`battletech.ini [view] strip`) | yes: message line, engine, throttle, weapons, Mechs within 500 m |
-| Secondary (Amiga) display, sound | no |
+| Secondary (Amiga) display | stood in for: a radar screen (sector, map, contacts) from the network's own messages; the Amiga board is not run |
+| Sound | no |
 
 The cockpit boots from its own image set to `main game loop (SecCom 674 bytes).`
 with three boards stubbed, and **all four of its subsystem checks now pass**.

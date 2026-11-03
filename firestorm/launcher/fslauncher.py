@@ -11,7 +11,12 @@ The window is a small web page served on 127.0.0.1 and shown in an Edge
 app window (Edge is part of Windows 10 and 11); nothing outside the
 standard library is needed. The server stops when the window closes.
 
-usage: fslauncher.py [--game DIR] [--port N] [--no-window]
+usage: fslauncher.py [--game DIR] [--port N] [--no-window] [--auto]
+
+--auto is how Windows starts it on a centre's PCs (Start with Windows, set
+by the first-time setup): the setup itself the first time; after that a pod
+runs unattended with no window (podagent.py: the Ready screen, the console's
+commands), and the console opens the launcher on its Pods page.
 
 --game is the Firestorm folder (MW4.exe, fsrun.exe and the shim's
 ddraw.dll); by default the folder this file is in if MW4.exe is there, else
@@ -36,10 +41,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)        # its own modules (mfdtest.py), in a packaged copy too
 import career  # noqa: E402
 import bt3  # noqa: E402
+import podagent  # noqa: E402
 START = int(time.time())
 # What the page may borrow from the game folder: its fonts and pictures.
-GAME_FILES = re.compile(r"^(hsh/(Mechs/[^/\\]+\.bmp|fonts/[^/\\]+\.ttf|logo\.bmp|mr_background\.bmp)"
-                        r"|profiles/livery/(camo|unit)_\d\d\.png)$", re.I)
+GAME_FILES = re.compile(r"^(hsh/(Mechs/[^/\\]+\.bmp|radar/hud/[^/\\]+\.bmp|fonts/[^/\\]+\.ttf|logo\.bmp|mr_background\.bmp)"
+                        r"|profiles/livery/(camo|unit)_\d\d\.png|profiles/portraits/[^/\\]+\.png)$", re.I)
 # The console's camo and unit lists (its slot's two numbered lists). Their
 # pictures are read off the console by tools/livery.py into profiles\livery.
 CAMOS, UNITS = 16, 17
@@ -341,18 +347,132 @@ def processes():
     return res
 
 
+def startup_link():
+    return os.path.join(os.environ.get("APPDATA", HERE), "Microsoft", "Windows", "Start Menu", "Programs",
+                        "Startup", "BattleTech Centre.lnk")
+
+
+def arrange_windows(mon, layout, rotate):
+    """The cockpit's screens on one monitor, as the Displays page's Arrange
+    does (app.js arrange()): the five MFDs (or the wall) along the top, the
+    radar below, the plasma sign beside it. Borderless."""
+    x, y, w, h = mon["work"] if mon.get("work") else (mon["x"], mon["y"], mon["w"], mon["h"])
+    out = {}
+    cw = w // 5
+    ch = cw * 3 // 4
+    if ch > h / 2:
+        ch = h // 2
+        cw = ch * 4 // 3
+    if layout == "wall":
+        out["mfd_wall"] = {"x": x, "y": y, "w": cw * 5, "h": ch, "borderless": "1"}
+    else:
+        for i in range(5):
+            out["mfd%d" % (i + 1)] = {"x": x + i * cw, "y": y, "w": cw, "h": ch, "borderless": "1"}
+    rh = h - ch
+    if rotate in ("90", "270"):
+        rw, rhh = rh * 3 // 4, rh
+    else:
+        rhh, rw = rh, rh * 4 // 3
+        if rw > w / 2:
+            rw = w // 2
+            rhh = rw * 3 // 4
+    out["radar"] = {"x": x, "y": y + ch, "w": rw, "h": rhh, "borderless": "1"}
+    pw = min(w - rw, 1344)
+    out["plasma"] = {"x": x + rw, "y": y + ch, "w": pw, "h": pw * 192 // 672, "borderless": "1"}
+    return {k: {kk: str(vv) for kk, vv in v.items()} for k, v in out.items()}
+
+
+def process_alive(pid):
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x00100000, False, pid)          # SYNCHRONIZE
+    if not h:
+        return False
+    try:
+        return k.WaitForSingleObject(h, 0) == 0x102     # WAIT_TIMEOUT: still running
+    finally:
+        k.CloseHandle(h)
+
+
+def wait_process(pid):
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x00100000, False, pid)
+    if h:
+        k.WaitForSingleObject(h, 0xFFFFFFFF)
+        k.CloseHandle(h)
+
+
+# The console's shim closes on WM_CLOSE with this, without asking its
+# operator first (ddraw.c, CONSOLE_CLOSE_NOW).
+CONSOLE_CLOSE_NOW = 0x4346
+
+
+def serving(pod):
+    """A pod (as PodDirectory lists it) in service: it plays the console's game."""
+    return podagent.pod_mode(pod.get("mode")) == "auto"
+
+
+def close_process(pid, grace=6, wparam=0):
+    """Ask a program's windows to close, as their own close button would,
+    and end it if it has not after a few seconds."""
+    u = ctypes.windll.user32
+    proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hw, lp):
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hw, ctypes.byref(p))
+        if p.value == pid and u.IsWindowVisible(hw):
+            u.PostMessageW(hw, 0x0010, wparam, 0)       # WM_CLOSE
+        return True
+    u.EnumWindows(proto(cb), 0)
+    until = time.time() + grace
+    while time.time() < until and process_alive(pid):
+        time.sleep(0.25)
+    if process_alive(pid):
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, creationflags=0x08000000)
+
+
+def bring_forward(title):
+    """The launcher's window in front again (Edge's, by its page's title)."""
+    u = ctypes.windll.user32
+    proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    found = []
+
+    def cb(hw, lp):
+        n = u.GetWindowTextLengthW(hw)
+        if n and u.IsWindowVisible(hw):
+            b = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(hw, b, n + 1)
+            if b.value.startswith(title):
+                found.append(hw)
+        return True
+    u.EnumWindows(proto(cb), 0)
+    for hw in found[:1]:
+        u.keybd_event(0x12, 0, 0, 0)                     # an Alt tap: Windows then lets this take the front
+        u.keybd_event(0x12, 0, 2, 0)
+        if u.IsIconic(hw):
+            u.ShowWindow(hw, 9)                         # SW_RESTORE
+        u.SetForegroundWindow(hw)
+
+
 # ------------------------------------------------------------ the launcher
 class Launcher:
     def __init__(self, game):
         self.game = game
         self.lock = threading.Lock()
         self.last_ping = None
+        self.bye = None                 # the window said it was closing (/api/bye)
         self.message = ""
         self.pilots = Pilots(game)
         self.careers = career.Careers(game)
         self.bt3 = bt3.BT3(os.path.dirname(os.path.dirname(game)))
         self.mfd_boards = []
         self.mfd_tester = None
+        self.url = None                 # this launcher's page
+        self.agent = None               # podagent.PodAgent: a pod run from the console
+        self.pods = None                # podagent.PodDirectory: the console's pods
+        self.window = None              # the Edge window this launcher opened
+        self.console_pid = None         # the console's MW4, while the launcher watches it
+        self.fs_live = False            # the console is up (or starting): the pods run Firestorm
 
     # ---- pilots: kept on the console; a pod asks the console's launcher
     def role(self):
@@ -721,6 +841,9 @@ class Launcher:
             subprocess.Popen(argv, cwd=game, startupinfo=si, creationflags=0x08000000)
 
         me = self.ini("launcher.ini")
+        if what == "console_stop":
+            self.console_stop()
+            return
         if what == "stop":
             subprocess.run(["taskkill", "/F", "/IM", "MW4.exe", "/IM", "Launcher.exe", "/IM", "mw4print.exe",
                             "/IM", "fsrun.exe"], capture_output=True, creationflags=0x08000000)
@@ -760,13 +883,14 @@ class Launcher:
                             pass
                         time.sleep(0.25)
                     time.sleep(1)
+                self.bt3_off()                  # the pods play one game at a time
+                self.sync_teslas()
+                self.pods_firestorm(True, wait=True)
                 if me.get("launcher", "start_printer", "1") == "1":
                     run([fsrun, "-exe", "mw4print.exe"], minimised=True)
                 run([fsrun, "-ctcltype", "1", "/gosnoblade"])
-            if what == "both":
-                threading.Thread(target=console, daemon=True).start()
-            else:
-                console()
+                threading.Thread(target=self.console_watch, daemon=True).start()
+            threading.Thread(target=console, daemon=True).start()
         if what == "test":
             if self.bridge_wanted():
                 self.bridge_start()
@@ -777,9 +901,381 @@ class Launcher:
                 argv.append("-NoPrint")
             subprocess.Popen(argv, creationflags=0x08000000)
         self.message = {"pod": "Pod started: the launcher is waiting for the console.",
-                        "console": "Console started.",
+                        "console": "Starting the console...",
                         "both": "Pod started; the console follows once the pod is up (a few seconds).",
                         "test": "Starting a test match on this PC (about 35 s)..."}.get(what, "") + self.bridge_note
+
+    # ---- a centre: the first-time setup, the console's pods, its way out
+    def setup_done(self):
+        return self.ini("launcher.ini").get("centre", "setup", "") == "done"
+
+    def setup_view(self):
+        me, shim = self.ini("launcher.ini"), self.ini("shim.ini")
+        mons = monitors()
+        primary = next((m["n"] for m in mons if m["primary"]), 1)
+        main = int(shim.get("main.ctcl2", "monitor", "0") or 0) or primary
+        cockpit = int(me.get("centre", "cockpit_monitor", "0") or 0) or next(
+            (m["n"] for m in mons if m["n"] != main), 0)
+        return {"done": self.setup_done(), "role": me.get("launcher", "role", "pod"),
+                "name": me.get("pod", "name", ""), "number": me.get("pod", "number", ""),
+                "host": socket.gethostname(), "addresses": local_addresses(), "monitors": mons,
+                "main": main, "cockpit": cockpit, "radar_rotate": shim.get("radar", "rotate", "0"),
+                "joysticks": joysticks(), "pads": pads(), "bt3": self.bt3.available,
+                "autostart": os.path.exists(startup_link()), "console": me.get("launcher", "console", ""),
+                "found": os.path.exists(self.path("MW4.exe")),
+                "shim": os.path.exists(self.path("ddraw.dll")) and os.path.exists(self.path("fsrun.exe"))}
+
+    def setup_save(self, body):
+        """The first-time setup's answers into the launcher's settings, both
+        games' screens, and Windows' start-up."""
+        role = body.get("role")
+        if role not in ("pod", "console"):
+            raise ValueError("a pod or the console?")
+        s = self.state()["settings"]
+        s["role"] = role
+        mons = {m["n"]: m for m in monitors()}
+        main = int(body.get("main") or 1)
+        cockpit = int(body.get("cockpit") or 0)
+        if role == "pod":
+            if main not in mons:
+                raise ValueError("which monitor is the main view?")
+            s["main_fullscreen"], s["main_monitor"] = True, main
+            if cockpit in mons and cockpit != main:
+                s["windows"].update(arrange_windows(mons[cockpit], s["mfd_layout"], s["radar_rotate"]))
+                s["show_surface"] = False
+                if s["mfd_layout"] == "wall":
+                    s["wall_cols"] = "5"
+            if self.bt3.available:          # 3.0: the cockpit's view on the main monitor, its radar on the other
+                b = self.bt3.ini()
+                b.set("view", "fullscreen", "1")
+                b.set("view", "monitor", str(main))
+                if cockpit in mons and cockpit != main:
+                    b.set("radar", "show", "1")
+                    b.set("radar", "fullscreen", "1")
+                    b.set("radar", "monitor", str(cockpit))
+                b.save()
+        self.save(s)
+        me = self.ini("launcher.ini")
+        me.set("centre", "setup", "done")
+        me.set("centre", "cockpit_monitor", str(cockpit) if cockpit else None)
+        if role == "pod":
+            num = str(body.get("number") or "").strip()
+            if num and not re.match(r"^\d{1,2}$", num):
+                raise ValueError("the pod's number: 1 to 99")
+            me.set("pod", "number", num or None)
+            me.set("pod", "name", (str(body.get("name") or "").strip() or ("Pod " + num if num else None)))
+        me.save()
+        self.autostart(body.get("autostart", True))
+        if role == "console":
+            self.pods_start()
+        self.message = "Set up as %s." % ("a pod" if role == "pod" else "the console")
+        return {"role": role}
+
+    def autostart(self, on):
+        """Start with Windows: a shortcut in the user's Startup folder, to
+        Firestorm.exe --auto in a packaged copy (or this script, from the
+        repository)."""
+        link = startup_link()
+        if not on:
+            if os.path.exists(link):
+                os.remove(link)
+            return
+        top = os.path.dirname(HERE)
+        starter = os.path.join(top, "Firestorm.exe")
+        if os.path.exists(starter) and os.path.exists(os.path.join(top, "python", "pythonw.exe")):
+            target, args, cwd = starter, "--auto", top
+        else:
+            py = sys.executable
+            if os.path.basename(py).lower() == "python.exe" and os.path.exists(py[:-10] + "pythonw.exe"):
+                py = py[:-10] + "pythonw.exe"
+            target, args, cwd = py, '"%s" --game "%s" --auto' % (os.path.join(HERE, "fslauncher.py"), self.game), HERE
+        q = lambda s: "'" + s.replace("'", "''") + "'"
+        ps = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut(%s); $s.TargetPath = %s; $s.Arguments = %s; "
+              "$s.WorkingDirectory = %s; $s.Description = 'BattleTech centre: this PC''s pod or console'; $s.Save()"
+              % (q(link), q(target), q(args), q(cwd)))
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                           timeout=30, creationflags=0x08000000)
+        if r.returncode or not os.path.exists(link):
+            raise ValueError("could not add it to Windows' start-up: %s" % (r.stderr.strip() or "no shortcut"))
+
+    def firewall(self):
+        """Let the centre's programs through Windows Firewall, once, as an
+        administrator (Windows asks): the pods' beacons and commands, the
+        3.0 battles, and the games themselves."""
+        exes = [self.path(n) for n in ("MW4.exe", "Launcher.exe", "mw4print.exe")]
+        if self.bt3.available:
+            exes += [os.path.join(self.bt3.home[1], n) for n in ("cockpit.exe", "battlepod.exe")]
+        lines = ["@echo off",
+                 'netsh advfirewall firewall delete rule name="BattleTech centre" >nul 2>&1',
+                 'netsh advfirewall firewall add rule name="BattleTech centre" dir=in action=allow protocol=UDP '
+                 'localport=%d,%d,%d profile=any' % (podagent.WHO_PORT, podagent.BEACON_PORT, bt3.HUB_PORT),
+                 'netsh advfirewall firewall add rule name="BattleTech centre" dir=in action=allow protocol=TCP '
+                 'localport=%d,%d profile=any' % (POD_PORT, podagent.AGENT_PORT)]
+        for e in exes:
+            if os.path.exists(e):
+                lines.append('netsh advfirewall firewall add rule name="BattleTech centre" dir=in action=allow '
+                             'program="%s" profile=any' % e)
+        lines.append("echo done> \"%s\"" % self.path("profiles", "firewall.ok"))
+        cmd = os.path.join(os.environ.get("TEMP", HERE), "battletech-firewall.cmd")
+        with open(cmd, "w", encoding="mbcs" if os.name == "nt" else "utf-8", newline="\r\n") as f:
+            f.write("\n".join(lines) + "\n")
+        ok = self.path("profiles", "firewall.ok")
+        try:
+            os.remove(ok)
+        except OSError:
+            pass
+        os.makedirs(os.path.dirname(ok), exist_ok=True)
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        "Start-Process -FilePath cmd.exe -ArgumentList '/c','\"%s\"' -Verb RunAs -Wait -WindowStyle Hidden"
+                        % cmd.replace("'", "''")], capture_output=True, timeout=120, creationflags=0x08000000)
+        if not os.path.exists(ok):
+            raise ValueError("Windows Firewall was not changed (the administrator's permission was not given)")
+        return "Windows Firewall lets the centre's programs through."
+
+    def pods_start(self):
+        if self.pods is None:
+            port = int(self.ini("launcher.ini").get("launcher", "pod_port", str(POD_PORT)))
+            self.pods = podagent.PodDirectory(port, lambda: self.fs_live)
+            # A console already running (this launcher started after it): watch it as one it started.
+            if any(p["role"] == "console" for p in processes()):
+                self.fs_live = True
+                threading.Thread(target=self.console_watch, daemon=True).start()
+
+    def pods_view(self):
+        listed = {t["ip"] for t in self.state_teslas()}
+        pods = self.pods.list() if self.pods else []
+        for p in pods:
+            p["listed"] = p["ip"] in listed
+        return {"pods": pods, "console": self.console_running() or self.fs_live, "bt3": self.bt3.available,
+                "battle": bool(self.bt3.running()) if self.bt3.available else False}
+
+    def pods_cmd(self, body):
+        """A command to one pod or several ({"ips": [...]}), at once."""
+        path = body.get("path")
+        if path not in ("/mode", "/identify", "/settings", "/restart", "/power", "/bt3/leave"):
+            raise ValueError("no such command")
+        ips = body.get("ips") or ([body["ip"]] if body.get("ip") else [])
+        if not ips:
+            raise ValueError("which pod?")
+        if not self.pods:
+            raise ValueError("this PC is not the console")
+        out, threads = {}, []
+
+        def one(ip):
+            try:
+                out[ip] = self.pods.command(ip, path, body.get("body") or {})
+            except ValueError as e:
+                out[ip] = {"error": str(e)}
+        for ip in ips:
+            t = threading.Thread(target=one, args=(ip,))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join(10)
+        bad = {ip: r["error"] for ip, r in out.items() if "error" in r}
+        what = {"/mode": {"auto": "in service", "ready": "out of service"}.get(
+                    (body.get("body") or {}).get("mode"), ""),
+                "/identify": "identify", "/settings": "settings", "/restart": "restart",
+                "/power": (body.get("body") or {}).get("action", ""), "/bt3/leave": "leave"}[path]
+        msg = "%s: %s" % (what[:1].upper() + what[1:] if what else path, ", ".join(
+            self.pod_name(ip) + (" - " + bad[ip] if ip in bad else "") for ip in ips))
+        if path == "/mode" and (body.get("body") or {}).get("mode") == "auto" and self.console_running():
+            new = [ip for ip in ips if ip not in {t["ip"] for t in self.state_teslas()}]
+            if new:
+                msg += ". Start the console again to add %s to its list." % ", ".join(self.pod_name(i) for i in new)
+        self.message = msg
+        return {"results": out, "message": msg}
+
+    def pod_name(self, ip):
+        for p in (self.pods.list() if self.pods else []):
+            if p["ip"] == ip:
+                return p.get("name") or ip
+        return ip
+
+    def teslas_all(self):
+        """[teslas], each pod with its slot name and whether it is on."""
+        ctcl = self.ini("ctcl.ini")
+        r = ctcl._find("teslas")
+        out = []
+        for l in (ctcl.lines[r[0] + 1:r[1]] if r else []):
+            m = re.match(r"\s*([#*]?)\s*([0-9A-Za-z_.-]+)\s*=\s*([^,]*)", l)
+            if m:
+                out.append({"ip": m.group(2), "name": m.group(3).strip(), "enabled": m.group(1) != "#",
+                            "mark": m.group(1)})
+        return out
+
+    def sync_teslas(self):
+        """The console's pod list ([teslas] in ctcl.ini) as the network has
+        it: each pod found in service on, in pod-number order after those
+        already listed; one found out of service off, until it is back. Pods typed in by hand, and found pods now silent, are left."""
+        if not self.pods:
+            return
+        found = {p["ip"]: p for p in self.pods.list() if p["online"]}
+        if not found:
+            return
+        ctcl = self.ini("ctcl.ini")
+        cur = self.teslas_all()
+        have = {t["ip"] for t in cur}
+        changed = False
+        for t in cur:
+            p = found.get(t["ip"])
+            if p:
+                on = serving(p)
+                if t["enabled"] != on:
+                    t["enabled"], changed = on, True
+        n = len(cur)
+        for ip, p in sorted(found.items(), key=lambda kv: (kv[1].get("num") or 999, kv[0])):
+            if ip not in have and serving(p):
+                n += 1
+                cur.append({"ip": ip, "name": "Pilot%d" % n, "enabled": True, "mark": ""})
+                changed = True
+        if changed:
+            ctcl.replace_section("teslas", [(("#" if not t["enabled"] else "*" if t.get("mark") == "*" else "") + t["ip"],
+                                             "%s, %s" % (t["name"] or "Pilot", t["ip"])) for t in cur])
+            ctcl.save()
+
+    # ---- the console's way out: its own Exit (the shim's), or the launcher's
+    def stop_pod(self):
+        """The pod side only - its launcher, its MW4, the MFD bridge - and
+        not a console on this same PC."""
+        old = [p["pid"] for p in processes() if p["role"] in ("pod", "pod launcher", "MFD bridge")]
+        if old:
+            subprocess.run(["taskkill", "/F"] + sum([["/PID", str(p)] for p in old], []),
+                           capture_output=True, creationflags=0x08000000)
+            time.sleep(1.5)
+        self.bridge_stop()
+
+    def pods_firestorm(self, run, wait=False):
+        """The pods in service run Firestorm's pod side only while the
+        console is up: started with it (afresh where a console has used it,
+        as a pod's MW4 takes one console a run) - with wait, until they are
+        drawing and listening - and back to Ready, no game, once it closes.
+        The console's "who" says the same every few seconds, for a pod that
+        missed this."""
+        self.fs_live = run
+        if not self.pods:
+            return []
+        ips = [p["ip"] for p in self.pods.list() if p["online"] and serving(p)]
+        for ip in ips:
+            try:
+                self.pods.command(ip, "/firestorm", {"run": run, "fresh": run})
+            except ValueError:
+                pass
+        if run and wait and ips:
+            self.message = "Starting the console: %d pod%s starting Firestorm first..." % (
+                len(ips), "" if len(ips) == 1 else "s")
+            time.sleep(3)
+            until = time.time() + 60
+            while time.time() < until:
+                now = {p["ip"]: p for p in self.pods.list()}
+                if all(ip not in now or not now[ip]["online"] or
+                       (now[ip].get("game_up") and not now[ip].get("console_seen")
+                        and now[ip].get("state") != "switching") for ip in ips):
+                    break
+                time.sleep(1)
+            time.sleep(2)                       # its MW4 listening
+        return ips
+
+    def console_running(self):
+        return bool(self.console_pid and process_alive(self.console_pid))
+
+    def console_watch(self):
+        """Find the console's MW4 once it is up; when it ends - however - the
+        report printer goes too, and the launcher's window comes forward."""
+        until = time.time() + 60
+        pid = None
+        while time.time() < until and not pid:
+            time.sleep(2)
+            pid = next((p["pid"] for p in processes() if p["role"] == "console"), None)
+        if not pid:                             # it never came: the pods need not wait for it
+            if not self.console_running():
+                self.pods_firestorm(False)
+            return
+        self.console_pid = pid
+        wait_process(pid)
+        if self.console_pid != pid:
+            return                              # a newer console's watcher has it
+        self.console_pid = None
+        subprocess.run(["taskkill", "/F", "/IM", "mw4print.exe"], capture_output=True, creationflags=0x08000000)
+        self.message = "The console is closed. The pods leave Firestorm and show Ready."
+        bring_forward("BattleTech Launcher")
+        self.pods_firestorm(False)
+
+    def console_stop(self):
+        """Close the console - only the console: a pod on this same PC, and
+        the pods on the network, are left as they are."""
+        watched = self.console_pid
+        pid = watched or next((p["pid"] for p in processes() if p["role"] == "console"), None)
+        if pid:
+            close_process(pid, wparam=CONSOLE_CLOSE_NOW)
+        subprocess.run(["taskkill", "/F", "/IM", "mw4print.exe"], capture_output=True, creationflags=0x08000000)
+        self.message = "The console is closed. The pods leave Firestorm and show Ready."
+        if not watched:                         # else its watcher does this
+            threading.Thread(target=self.pods_firestorm, args=(False,), daemon=True).start()
+
+    def firestorm_off(self):
+        """The console's Firestorm closed, and its pods back to Ready, at
+        once - before a 3.0 battle takes the pods."""
+        pid = self.console_pid or next((p["pid"] for p in processes() if p["role"] == "console"), None)
+        self.console_pid = None                 # its watcher stands down
+        if pid:
+            self.message = "Closing the Firestorm console first..."
+            close_process(pid, wparam=CONSOLE_CLOSE_NOW)
+            subprocess.run(["taskkill", "/F", "/IM", "mw4print.exe"], capture_output=True, creationflags=0x08000000)
+        if pid or self.fs_live:
+            self.pods_firestorm(False)
+
+    def bt3_off(self):
+        """A 3.0 battle this PC runs ended, and its pods back to Ready -
+        before the console's Firestorm takes them."""
+        if self.bt3.available and (self.bt3.running() or getattr(self, "bt3_pods_in", [])):
+            self.message = "Ending the 3.0 battle first..."
+            self.bt3.stop()
+            self.bt3_leave()
+
+    # ---- 3.0 on a centre's console: its pods in service join the battle
+    def bt3_pods(self):
+        if not self.pods or self.role() == "pod":
+            return None
+        pods = [p for p in self.pods.list() if p["online"] and serving(p) and "bt3" in (p.get("games") or [])]
+        return pods or None
+
+    def bt3_start(self, body, human):
+        if self.pods and self.role() != "pod":
+            self.firestorm_off()                # the pods play one game at a time
+        pods = self.bt3_pods()
+        msg = self.bt3.start(body, human, pods)
+        if pods:
+            host = podagent.own_ip()
+            names = self.bt3.ini()
+
+            def send():
+                time.sleep(1.5)                 # the hub up and listening
+                for p, seat in zip(pods, self.bt3.seats):
+                    try:
+                        self.pods.command(p["ip"], "/bt3/join", {"host": host, "seat": seat, "name": p.get("name", "")})
+                    except ValueError as e:
+                        self.message = "%s did not join: %s" % (p.get("name") or p["ip"], e)
+                self.bt3_pods_in = [p["ip"] for p in pods]
+                threading.Thread(target=self.bt3_watch, daemon=True).start()
+            threading.Thread(target=send, daemon=True).start()
+        return msg
+
+    def bt3_watch(self):
+        """When the console's battle ends, its pods' cockpits go too."""
+        proc = self.bt3.proc
+        while proc and proc.poll() is None:
+            time.sleep(1)
+        self.bt3_leave()
+
+    def bt3_leave(self):
+        for ip in getattr(self, "bt3_pods_in", []):
+            try:
+                self.pods.command(ip, "/bt3/leave", {})
+            except ValueError:
+                pass
+        self.bt3_pods_in = []
 
     # ---- MFD boards (mfdtest.py): find them, tell each which MFD it is, test pictures
     def mfd_mod(self):
@@ -1019,13 +1515,35 @@ def mech_table(game):
 def mech_images(game):
     """chassis -> its picture in the game's hsh\\Mechs (the battle report's
     portraits), matched loosely: "Arctic Wolf" is arctic wolf.bmp, "Mad Cat
-    MKII" mad cat mk.ii.bmp. Behemoth, Longbow and Victor have none."""
+    MKII" mad cat mk.ii.bmp. Behemoth, Behemoth II, Longbow and Victor have
+    none."""
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+    out = {}
     d = os.path.join(game, "hsh", "Mechs")
+    if os.path.isdir(d):
+        files = {norm(f[:-4]): f for f in os.listdir(d) if f.lower().endswith(".bmp")}
+        out = {c: "hsh/Mechs/" + files[norm(c)] for c in CHASSIS if norm(c) in files}
+    # The ones it has none of, from the radar's turning model by
+    # tools/mechbust.py (profiles\portraits\<chassis>.png).
+    d = os.path.join(game, "profiles", "portraits")
+    if os.path.isdir(d):
+        files = {norm(f[:-4]): f for f in os.listdir(d) if f.lower().endswith(".png")}
+        out.update({c: "profiles/portraits/" + files[norm(c)] for c in CHASSIS
+                    if c not in out and norm(c) in files})
+    return out
+
+
+def mech_schematics(game):
+    """chassis -> the radar's damage diagram of it (hsh\\radar\\hud), for a
+    'Mech with no portrait: the game drew Longbow and Victor that way and
+    nowhere else. The Behemoths have neither."""
+    d = os.path.join(game, "hsh", "radar", "hud")
     if not os.path.isdir(d):
         return {}
     norm = lambda s: re.sub(r"[^a-z0-9]", "", s.lower())
+    have = mech_images(game)
     files = {norm(f[:-4]): f for f in os.listdir(d) if f.lower().endswith(".bmp")}
-    return {c: "hsh/Mechs/" + files[norm(c)] for c in CHASSIS if norm(c) in files}
+    return {c: "hsh/radar/hud/" + files[norm(c)] for c in CHASSIS if c not in have and norm(c) in files}
 
 
 class Pilots:
@@ -1062,7 +1580,8 @@ class Pilots:
             if v:
                 groups[c].append({"file": v, "label": v[len(c):].strip()})
         return {"chassis": [c for c in sorted(CHASSIS, key=str.lower)], "variants": groups,
-                "images": mech_images(self.game), "specs": self.specs(), "livery": self.livery()}
+                "images": mech_images(self.game), "schematics": mech_schematics(self.game),
+                "specs": self.specs(), "livery": self.livery()}
 
     def livery(self):
         """The camo and unit pictures tools/livery.py read off the console:
@@ -1210,6 +1729,10 @@ def make_handler(app):
                 return self.send(200, {"joysticks": joysticks()})
             if path == "/api/ping":
                 return self.send(200, {"ok": True})
+            if path == "/api/setup":
+                return self.send(200, app.setup_view())
+            if path == "/api/pods":
+                return self.send(200, app.pods_view())
             if path == "/api/pilots":
                 try:
                     return self.send(200, app.pilots_view())
@@ -1217,6 +1740,7 @@ def make_handler(app):
                     return self.send(200, {"error": str(e), "local": False, "console": app.console_addr()})
             if path == "/api/bt3":
                 v = app.bt3.view()
+                v["centre_pods"] = [p.get("name") or p["ip"] for p in (app.bt3_pods() or [])]
                 if v.get("battle") and v["battle"].get("over"):
                     threading.Thread(target=app.bt3_report, daemon=True).start()
                 return self.send(200, v)
@@ -1255,23 +1779,39 @@ def make_handler(app):
                      ".svg": "image/svg+xml", ".png": "image/png"}.get(os.path.splitext(f)[1], "application/octet-stream")
             with open(f, "rb") as fh:
                 data = fh.read()
-            if name == "index.html":            # this run's scripts and styles, never a cached older copy
+            if name in ("index.html", "setup.html"):    # this run's scripts and styles, never a cached older copy
                 data = data.replace(b'.js"', b'.js?v=%d"' % START).replace(b'.css"', b'.css?v=%d"' % START)
             return self.send(200, data, ctype + ("; charset=utf-8" if ctype.startswith("text") else ""))
 
         def do_POST(self):
-            app.last_ping = time.time()
             # Only the page we served: refuse requests from other sites.
             origin = self.headers.get("Origin", "")
             if origin and not origin.startswith("http://127.0.0.1:"):
                 return self.send(403, {"error": "forbidden"})
             n = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(n) or b"{}")
+            raw = self.rfile.read(n)
+            if self.path == "/api/bye":         # the window closing (navigator.sendBeacon)
+                app.bye = time.time()
+                return self.send(200, {"ok": True})
+            app.last_ping = time.time()
+            body = json.loads(raw or b"{}")
             try:
                 if self.path == "/api/save":
                     app.save(body)
                 elif self.path == "/api/start":
                     app.start(body.get("what"), body)
+                elif self.path == "/api/setup":
+                    out = app.setup_save(body)
+                    if app.agent is None and out["role"] == "pod" and app.auto:
+                        app.finish_setup = time.time()  # main() turns this launcher into the pod
+                    out.update(ok=True, message=app.message)
+                    return self.send(200, out)
+                elif self.path == "/api/setup/firewall":
+                    return self.send(200, {"ok": True, "message": app.firewall()})
+                elif self.path == "/api/pods/cmd":
+                    out = app.pods_cmd(body)
+                    out["ok"] = True
+                    return self.send(200, out)
                 elif self.path.startswith("/api/mfd/"):
                     fn = {"/api/mfd/scan": lambda b: app.mfd_scan(), "/api/mfd/assign": app.mfd_assign,
                           "/api/mfd/test": app.mfd_test, "/api/mfd/record": app.mfd_record,
@@ -1290,12 +1830,13 @@ def make_handler(app):
                     if self.path == "/api/bt3/start":
                         # The panel on the MFD boards, when there are some (MFD boards page).
                         human = ""
-                        if app.bridge_wanted() and app.bridge_files("battlepod"):
+                        local = not app.bt3_pods() or str(body.get("game.local", b.settings()["game.local"])) != "0"
+                        if local and app.bridge_wanted() and app.bridge_files("battlepod"):
                             app.bridge_start("battlepod")
                             human = "--rio-port 127.0.0.1:%d" % BT3_RIO_PORT
                         else:
                             app.bridge_stop()
-                        msg = b.start(body, human)
+                        msg = app.bt3_start(body, human)
                         if human:
                             msg += " The cockpit's panel goes to the MFD board%s." % ("s" if len(app.bridge_ports()) > 1 else "")
                         return self.send(200, {"ok": True, "message": msg})
@@ -1303,8 +1844,9 @@ def make_handler(app):
                         return self.send(200, {"ok": True, "message": b.join(body)})
                     if self.path == "/api/bt3/stop":
                         b.stop()
+                        app.bt3_leave()
                         app.bridge_stop()
-                        return self.send(200, {"ok": True})
+                        return self.send(200, {"ok": True, "message": "The battle is over: the pods show Ready."})
                     return self.send(404, {"error": "not found"})
                 elif self.path in ("/api/pilot", "/api/pilot/delete", "/api/seat"):
                     fn = {"/api/pilot": app.pilot_save, "/api/pilot/delete": app.pilot_delete,
@@ -1405,19 +1947,32 @@ def main():
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--no-window", action="store_true", help="serve only; open the printed address yourself")
     ap.add_argument("--page", default="", help="the page to open on: bt3 for BattleTech 3.0")
+    ap.add_argument("--auto", action="store_true",
+                    help="as Windows starts it: the first-time setup, then a pod unattended or the console")
+    ap.add_argument("--pod", action="store_true", help="run as an unattended pod (podagent.py), whatever the role")
     a = ap.parse_args()
 
     app = Launcher(os.path.abspath(a.game))
+    app.auto = a.auto
+    app.finish_setup = None
     if os.path.exists(app.path("MW4.exe")):
         app.relocate()
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(app))
     url = "http://127.0.0.1:%d/" % srv.server_address[1]
-    if re.match(r"^\w+$", a.page):
+    app.url = url
+    first = a.auto and not app.setup_done()
+    agent = a.pod or (a.auto and not first and app.role() == "pod")
+    if first:
+        url += "setup.html"
+    elif a.auto and app.role() != "pod":
+        url += "#pods"
+    elif re.match(r"^\w+$", a.page):
         url += "#" + a.page
     print("Firestorm launcher: %s (game: %s)" % (url, app.game), flush=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     # On the console, the pods' way in to the roster ([launcher] pod_port).
-    if app.role() in ("console", "both"):
+    if app.role() in ("console", "both") and not agent:
+        app.pods_start()
         port = int(app.ini("launcher.ini").get("launcher", "pod_port", str(POD_PORT)))
         try:
             pods = ThreadingHTTPServer(("0.0.0.0", port), make_pod_handler(app))
@@ -1430,25 +1985,54 @@ def main():
     if app.role() in ("pod", "both") or app.bt3.available:
         threading.Thread(target=app.career_loop, daemon=True).start()
 
-    if not a.no_window:
+    def run_pod():
+        app.agent = podagent.PodAgent(app)
+        app.agent.run()
+        print("pod: %s, unattended (podagent)" % app.agent.name, flush=True)
+
+    if agent:
+        run_pod()
+    elif not a.no_window:
         e = edge()
         profile = os.path.join(os.environ.get("LOCALAPPDATA", HERE), "FirestormLauncher", "window")
         if e:
-            subprocess.Popen([e, "--app=" + url, "--user-data-dir=" + profile, "--window-size=1280,860",
-                              "--no-first-run", "--disable-features=Translate"])
+            argv = [e, "--app=" + url, "--user-data-dir=" + profile, "--no-first-run", "--disable-features=Translate"]
+            argv += ["--start-maximized"] if a.auto else ["--window-size=1280,860"]
+            app.window = subprocess.Popen(argv)
         else:
             import webbrowser
             webbrowser.open(url)
-    # The page pings every 2 s; once it has and then stops for 10 s, the window is closed.
+    # The window says when it closes (/api/bye) and the launcher ends a few
+    # seconds later, unless a page asks for something again - a reload says
+    # bye too. Its pings are only the fallback for a window that could not
+    # say: Edge slows a page that is not in front, to a timer a minute once
+    # it has been hidden a while, so a short silence means nothing - ten
+    # seconds of it used to end the launcher under a window still open,
+    # which then showed nothing and did nothing.
     try:
         while True:
             time.sleep(1)
-            if not a.no_window and app.last_ping and time.time() - app.last_ping > 10:
+            now = time.time()
+            # The first-time setup done on a pod: its window closes, and this
+            # launcher carries on as the pod - as it will at every start.
+            if app.finish_setup and now - app.finish_setup > 2 and not app.agent:
+                if app.window and app.window.poll() is None:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(app.window.pid)], capture_output=True,
+                                   creationflags=0x08000000)
+                threading.Thread(target=app.career_loop, daemon=True).start()
+                run_pod()
+            if a.no_window or app.agent:
+                continue
+            if app.bye and now - app.bye > 4 and (not app.last_ping or app.last_ping < app.bye):
+                break
+            if app.last_ping and now - app.last_ping > 600:
                 break
     except KeyboardInterrupt:
         pass
     srv.shutdown()
 
+
+podagent.monitors, podagent.edge = monitors, edge
 
 if __name__ == "__main__":
     main()

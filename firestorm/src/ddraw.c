@@ -1152,6 +1152,99 @@ static int gpu_present(struct dev *d, LPDIRECTDRAWSURFACE7 src)
 	return 1;
 }
 
+/* ---- a pod waiting: "Ready"
+ *
+ * A centre's pod with nobody in it says "Ready", large and white on black,
+ * on its main view (launcher/podagent.py). While a pod's MW4 waits for the
+ * console its main view is the game's idle screen; with [ready] text set
+ * (the pod agent sets it, and [ready] sub, a smaller grey line under it -
+ * the pod's name and game) the shim paints that there instead. A mission's
+ * view is the game's own. The pod's MW4 sets its main view's mode once for
+ * the front end, again for each mission, and back to the front end's after
+ * it (main_mode_set): a mode other than the front end's is a mission; the
+ * front end's again ends it - or, where both are the same size, each set
+ * changes over. The log says which, "pod: waiting" or "pod: in a mission",
+ * for the pod agent. */
+static int g_mission;			/* the pod's main view is a mission's */
+
+static void main_mode_set(DWORD w, DWORD h)
+{
+	static int n, other;
+	static DWORD fw, fh;
+
+	if (!n++) { fw = w; fh = h; g_mission = 0; }
+	else if (w != fw || h != fh) g_mission = other = 1;
+	else g_mission = other ? 0 : !g_mission;
+}
+
+static int ready_paint(struct dev *d)
+{
+	static char text[64], sub[128];
+	static DWORD last;
+	HDC dc, mem;
+	HBITMAP bm, oldbm;
+	HFONT f, of;
+	RECT rc, r;
+	DWORD now = GetTickCount();
+	int w, h;
+
+	if (now - last < 250 && last) return text[0] != 0;	/* four times a second is plenty */
+	last = now;
+	cfg_str("ready", "text", "", text, sizeof text);	/* each time: the agent may change it */
+	cfg_str("ready", "sub", "", sub, sizeof sub);
+	if (!text[0] || !d->hwnd) return 0;
+	GetClientRect(d->hwnd, &rc);
+	w = rc.right; h = rc.bottom;
+	if (w <= 0 || h <= 0) return 1;
+	dc = GetDC(d->hwnd);
+	mem = CreateCompatibleDC(dc);
+	bm = CreateCompatibleBitmap(dc, w, h);
+	oldbm = (HBITMAP)SelectObject(mem, bm);
+	FillRect(mem, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+	SetBkMode(mem, TRANSPARENT);
+	f = CreateFontA(-(h * 22 / 100), 0, 0, 0, 800, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Segoe UI");
+	of = (HFONT)SelectObject(mem, f);
+	SetTextColor(mem, RGB(255, 255, 255));
+	SetRect(&r, 0, 0, w, h * 92 / 100);
+	DrawTextA(mem, text, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	SelectObject(mem, of);
+	DeleteObject(f);
+	if (sub[0]) {
+		f = CreateFontA(-(h * 28 / 1000 > 14 ? h * 28 / 1000 : 14), 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+				ANTIALIASED_QUALITY, 0, "Segoe UI");
+		of = (HFONT)SelectObject(mem, f);
+		SetTextColor(mem, RGB(0x70, 0x70, 0x70));
+		SetRect(&r, 0, h * 86 / 100, w, h * 96 / 100);
+		DrawTextA(mem, sub, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SelectObject(mem, of);
+		DeleteObject(f);
+	}
+	BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
+	SelectObject(mem, oldbm);
+	DeleteObject(bm);
+	DeleteDC(mem);
+	ReleaseDC(d->hwnd, dc);
+	return 1;
+}
+
+/* The pod's main view, while it waits: Ready (1), or the game's own (0). */
+static int ready_present(struct dev *d)
+{
+	static int was = -1;
+	int waiting = !g_mission;
+
+	if (d->kind != K_MAIN || !g_cockpit) return 0;
+	if (waiting != was) {
+		say(waiting ? "pod: waiting for the console" : "pod: in a mission");
+		was = waiting;
+	}
+	if (!waiting || !ready_paint(d)) return 0;
+	if (++d->frames == 1)
+		say("%s%d: first frame, %lux%lu", KIND[d->kind], d->serial, d->w, d->h);
+	frame_cap();
+	return 1;
+}
+
 static void present(struct dev *d)
 {
 	LARGE_INTEGER t;
@@ -1161,6 +1254,7 @@ static void present(struct dev *d)
 	DWORD x, y;
 
 	if (!src || !d->w) return;
+	if (ready_present(d)) return;
 	ms_since(&t);
 	if (d->kind == K_MAIN && !snap_due(d, d->frames + 1) && gpu_present(d, src)) {
 		if (++d->frames == 1)
@@ -1499,6 +1593,27 @@ static HRESULT WINAPI h_SetCooperativeLevel(void *dd, HWND w, DWORD flags)
 static WNDPROC g_main_proc;
 static HWND g_main_hwnd;
 
+/* The console's way out: its window's close button, Alt+F4 or Ctrl+Q asks
+ * once - the pods carry on and wait for it - and the game then closes as
+ * its own Quit does. The launcher's "Close the console" posts WM_CLOSE with
+ * wParam CONSOLE_CLOSE_NOW, which does not ask. */
+#define CONSOLE_CLOSE_NOW 0x4346
+static int g_closing;
+
+static int console_close(HWND w, int ask)
+{
+	if (g_closing) return 1;
+	if (ask && MessageBoxA(w, "Close the console and go back to the launcher?\n\n"
+			       "The pods are left as they are: they wait for the console to start again.",
+			       "BattleTech: Firestorm console", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 |
+			       MB_TOPMOST | MB_SETFOREGROUND) != IDYES)
+		return 0;
+	g_closing = 1;
+	say("console: closed by %s", ask ? "its operator" : "the launcher");
+	PostMessageA(w, WM_CLOSE, 0, 0);
+	return 1;
+}
+
 static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
 	switch (m) {
@@ -1510,6 +1625,17 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 		break;
 	case WM_KILLFOCUS:
 		return 0;
+	}
+	if (!strcmp(g_role, "ctcl1") && !g_closing) {
+		if (m == WM_CLOSE) {
+			console_close(w, wp != CONSOLE_CLOSE_NOW);
+			return 0;
+		}
+		if ((m == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE) ||
+		    (m == WM_KEYDOWN && wp == 'Q' && GetKeyState(VK_CONTROL) < 0)) {
+			console_close(w, 1);
+			return 0;
+		}
 	}
 	return CallWindowProcA(g_main_proc, w, m, wp, lp);
 }
@@ -1555,6 +1681,7 @@ static HRESULT WINAPI h_SetDisplayMode(void *dd, DWORD w, DWORD h, DWORD bpp, DW
 	if (!d || !d->emulated)
 		return ((SetMode_t)DD_ORIG(dd, DD_SetDisplayMode))(dd, w, h, bpp, hz, flags);
 	d->w = w; d->h = h; d->bpp = bpp == 16 ? 16 : 32;
+	if (d->kind == K_MAIN) main_mode_set(w, h);
 	free(d->rgb);
 	d->rgb = NULL;
 	if (d->kind == K_MAIN && d->hwnd) {

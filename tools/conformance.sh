@@ -729,7 +729,7 @@ CHECKTEXT="$SEEN"
 check_contains 'type 3, 286 longwords'                      # the Mech's model record
 check_contains 'FFFFFFFF        1C4'                        # naming model 452, the MadCat
 check_contains '300.0000   150.0000     0.9397     0.9848'  # its searchlight
-check_contains 'entity 1 model 452 at (8000.0, 8000.0, 5.4): 340 polygons'  # drawn from the pod's camera, arms and all
+check_contains 'entity 1 model 452 at (8000.0, 8000.0, 5.4): 230 polygons'  # drawn from the pod's camera, arms and all (no muzzle flash: not firing), at the detail 40 m picks
 CHECKTEXT="$UNSEEN"
 check_count_zero 'type 3,'                                  # no visibility range, no Mech
 CHECKTEXT="$AVATAR"
@@ -738,7 +738,7 @@ CHECKTEXT="$LINKED"
 check_contains '0000  02 1F A0 60'                                  # My_Mech_Ptr is the created Mech
 check_contains 'pick (240,180)'                                     # and the HUD centres on its view
 CHECKTEXT="$TERRAIN"
-check_contains 'entity 20 model 132 at (8000.0, 8060.0, 0.0): 57 polygons'  # a class 3 from 0xE4
+check_contains 'entity 20 model 132 at (8000.0, 8060.0, 0.0): 45 polygons'  # a class 3 from 0xE4
 CHECKTEXT="$MECHCLASS"
 check_contains 'entity 1 model 456 at (8000.0, 8060.0, 5.4)'   # MECH_CLASS: an Avatar where it was put
 CHECKTEXT="$DRIVE"
@@ -761,14 +761,15 @@ CHECKTEXT="shots on the wire: $POOLSENT"
 check_contains 'shots on the wire: 993'                               # and puts its shots on the wire
 if [ -n "$MAP" ]; then
     CHECKTEXT="$MAP"
-    check_contains 'entity 733 model 11 at (5365.0, 7660.0, 0.0): 11 polygons'  # BadLands, from the drop
+    check_contains 'entity 733 model 11 at (5365.0, 7660.0, 0.0): 18 polygons'  # BadLands, from the drop
+    check_contains 'entity 89 model 32 at (5610.0, 7600.0, 0.0): 0 polygons, 13 marks'  # its line-work ($220)
     check_count_zero 'Create unknown thing'
 fi
 if [ -n "$GAME" ]; then
     CHECKTEXT="$GAME"
     check_contains '0000  02 1F A0 60'                                   # the pod is flying thing 1
     check_contains 'height 8.20'                                         # from its cockpit
-    check_contains 'entity 2 model 451 at (5385.0, 7475.0, 5.4): 322 polygons'  # and sees the Loki, arms and all
+    check_contains 'entity 2 model 451 at (5385.0, 7475.0, 5.4): 107 polygons'  # and sees the Loki, at the detail 100 m picks
 fi
 # Scenario 4Q: live play, headless. tools/play.sh starts a game the same way
 # and runs the SDL cockpit with the main view drawn from the pod's own

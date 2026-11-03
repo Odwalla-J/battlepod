@@ -14,6 +14,25 @@
 #include <stdio.h>
 #include <string.h>
 
+/* A console of its own - Launcher.exe starts a pod's game through this, and
+ * Windows gives it a console window over the pod's screens - is hidden while
+ * all goes well, and shown again to say what did not. */
+static HWND own_console(void)
+{
+	DWORD ids[2];
+	HWND w = GetConsoleWindow();
+	return w && GetConsoleProcessList(ids, 2) == 1 ? w : NULL;
+}
+
+static int fail(HWND con)
+{
+	if (con) {
+		ShowWindow(con, SW_SHOW);
+		Sleep(10000);			/* long enough to read */
+	}
+	return 1;
+}
+
 int main(void)
 {
 	char dir[MAX_PATH], exe[MAX_PATH], dll[MAX_PATH], cmd[4096], name[MAX_PATH] = "MW4.exe", *slash;
@@ -23,6 +42,9 @@ int main(void)
 	void *remote;
 	HANDLE th;
 	DWORD code;
+	HWND con = own_console();
+
+	if (con) ShowWindow(con, SW_HIDE);
 
 	/* Our own arguments, without our own name. */
 	if (*args == '"') { args = strchr(args + 1, '"'); args = args ? args + 1 : ""; }
@@ -43,12 +65,12 @@ int main(void)
 	snprintf(cmd, sizeof cmd, "\"%s\" %s", exe, args);
 	if (GetFileAttributesA(exe) == INVALID_FILE_ATTRIBUTES || GetFileAttributesA(dll) == INVALID_FILE_ATTRIBUTES) {
 		fprintf(stderr, "fsrun: put fsrun.exe beside %s and the shim's ddraw.dll\n", name);
-		return 1;
+		return fail(con);
 	}
 
 	if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, dir, &si, &pi)) {
 		fprintf(stderr, "fsrun: cannot start %s (%lu)\n", exe, GetLastError());
-		return 1;
+		return fail(con);
 	}
 	remote = VirtualAllocEx(pi.hProcess, NULL, sizeof dll, MEM_COMMIT, PAGE_READWRITE);
 	WriteProcessMemory(pi.hProcess, remote, dll, strlen(dll) + 1, NULL);
@@ -60,7 +82,7 @@ int main(void)
 	if (!th) {
 		fprintf(stderr, "fsrun: cannot load the shim (%lu)\n", GetLastError());
 		TerminateProcess(pi.hProcess, 1);
-		return 1;
+		return fail(con);
 	}
 	WaitForSingleObject(th, INFINITE);
 	GetExitCodeThread(th, &code);
@@ -69,7 +91,7 @@ int main(void)
 	if (!code) {
 		fprintf(stderr, "fsrun: the shim did not load\n");
 		TerminateProcess(pi.hProcess, 1);
-		return 1;
+		return fail(con);
 	}
 	ResumeThread(pi.hThread);
 	printf("fsrun: %s running as process %lu\n", name, pi.dwProcessId);

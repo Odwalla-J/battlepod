@@ -21,7 +21,7 @@ firmware, not the hub.
 
 usage:
   hub.py [--scenario NAME] [--bots N] [--human] [--vehicles 0,8,12,...]
-         [--port P] [--seconds S] [--names Ace,...] [--state FILE]
+         [--port P] [--seconds S] [--names Ace,...] [--paint 0,11,...] [--state FILE]
          [--bin DIR] [--logs DIR] [--remote N --listen 0.0.0.0]
 
 Needs VWE_GAME_FILES, `make` (and `make cockpit` for --human). Pod output
@@ -37,6 +37,12 @@ its own PC run with --net THIS-PC:PORT --net-node SEAT and POD_ARGS, which
 the launcher's "Join a battle" does - and it needs --listen 0.0.0.0 to be
 reached. Their names and Mechs are the operator's to give, as the arcade's
 console did.
+--paint gives each Mech its paint, the person first: MECH_CLASS +0x4E, which
+the pod files as the Mech's var 1 and its models read as a scheme (tens: 0
+desert, 1 green, 2 black, 3 white, 4 grey, 5 red) and an accent (units: 0 red,
+1 green, 2 blue, 3 yellow, 4 white, 5 black, 6 grey, 7 purple). Left out, every
+Mech is desert with an accent of its own, in that order.
+
 The wire between the hub and its pods is docs/api.md.
 """
 import json
@@ -113,6 +119,7 @@ class Pod:
         self.down = False
         self.respawn_at = 0.0   # when a destroyed Mech drops in again (--respawn)
         self.mech_pkt = None    # its MECH_CLASS, as the game began
+        self.paint = 0          # MECH_CLASS +0x4E: scheme x 10 + accent (--paint)
         self.moded = 0
         self.ops = {}
         self.pool = []
@@ -148,6 +155,10 @@ class Hub:
         for i in range(args.bots):
             n += 1
             self.pods.append(Pod(n, args.vehicles[n - 1], False, names[n - 1] if n - 1 < len(names) else ""))
+        paints = [s.strip() for s in (args.paint or "").split(",")]
+        for i, pod in enumerate(self.pods):
+            p = paints[i] if i < len(paints) else ""
+            pod.paint = int(p) if p.isdigit() else i % 8
         self.world = self.build_world()
         scen = os.path.join(self.gf, "Scenarios", self.args.scenario)
         self.map_objects = [(o[2], o[3], o[0]) for o in mapsend.objects(scen)]
@@ -184,7 +195,8 @@ class Hub:
                 (0x0E, ">l", 1), (0x12, ">l", pod.node),
                 (0x16, ">f", x), (0x1A, ">f", y), (0x1E, ">f", 5.4),
                 (0x22, "8s", pod.name.encode("ascii", "replace")[:8]),
-                (0x4A, ">h", pod.vehicle), (0x50, ">f", facing)]), pod.node)
+                (0x4A, ">h", pod.vehicle), (0x4E, ">h", pod.paint),
+                (0x50, ">f", facing)]), pod.node)
             world.append(pod.mech_pkt)
             m = self.mechs[pod.node] = Mech(pod.node)
             m.x, m.y, m.heading = x, y, facing
@@ -273,7 +285,9 @@ class Hub:
     def stop(self):
         # Ask first: a pod told to quit ends its run and prints its report.
         for pod in self.pods:
-            if not pod.remote:              # a person elsewhere leaves when they choose
+            # A person elsewhere leaves when they choose - unless the
+            # battle is the centre's (--end-remote): then their cockpits end too.
+            if not pod.remote or self.args.end_remote:
                 self.send(pod, b"Q", b"")
         for pod in self.pods:
             if pod.proc:
@@ -530,7 +544,8 @@ class Hub:
                 if now - last_state >= 0.5:
                     self.write_state(now)
                     last_state = now
-                if all(p.proc.poll() is not None for p in self.pods if p.proc):
+                procs = [p for p in self.pods if p.proc]
+                if procs and all(p.proc.poll() is not None for p in procs):
                     print("hub: every pod has exited")
                     break
                 if any(p.human and p.proc and p.proc.poll() is not None for p in self.pods):
@@ -587,6 +602,8 @@ def main(argv):
     ap.add_argument("--follow", action="store_true",
                     help="with --console-png, follow the fighting instead of the whole map")
     ap.add_argument("--names", default="", help="the pilots' names, the person first: Ace,Wolf,...")
+    ap.add_argument("--paint", default="",
+                    help="each Mech's paint, the person first: scheme x 10 + accent, e.g. 0,11,25")
     ap.add_argument("--state", default="", help="keep the battle as JSON in this file")
     ap.add_argument("--bin", default=os.environ.get("BATTLEPOD_BIN", ""),
                     help="where cockpit.exe and battlepod.exe are (default build/)")
@@ -597,6 +614,8 @@ def main(argv):
                     help="seats for people on other PCs, after this PC's own and before the CPU pilots")
     ap.add_argument("--listen", default="127.0.0.1",
                     help="the address the hub takes pods on: 0.0.0.0 for pods on other PCs")
+    ap.add_argument("--end-remote", action="store_true",
+                    help="end the other PCs' cockpits with the battle (a centre's pods)")
     ap.add_argument("--human-args", default="",
                     help="more options for the person's cockpit only, e.g. --rio-port for a panel bridge")
     ap.add_argument("--pod-args", default="",

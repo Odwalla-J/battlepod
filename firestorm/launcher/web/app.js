@@ -585,7 +585,19 @@ $("#lb-game").addEventListener("change", loadBoards);
 $("#lb-sort").addEventListener("change", renderBoards);
 
 // Keep the server alive while the window is open; refresh the launch page.
-setInterval(() => fetch("/api/ping").catch(() => {}), 2000);
+// If it cannot be reached the page says so: everything on it needs it.
+let lost = 0;
+function ping() {
+  fetch("/api/ping").then(r => {
+    if (!r.ok) throw new Error(r.status);
+    if (lost) { lost = 0; status("Ready.", dirty); }
+  }).catch(() => {
+    if (++lost >= 2) status("The launcher is not running - close this window and start it again.", true, true);
+  });
+}
+setInterval(ping, 2000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) ping(); });
+window.addEventListener("pagehide", () => navigator.sendBeacon("/api/bye", ""));
 setInterval(() => { if ($("#page-launch").classList.contains("on")) refreshRun(); }, 4000);
 
 wirePilots();
@@ -600,11 +612,19 @@ function mechImage(chassis) {
   const f = (m.images || {})[chassis];
   return f ? "/game/" + f.split("/").map(encodeURIComponent).join("/") : "";
 }
+// The radar's damage diagram, for a 'Mech the game has no portrait of.
+function mechSchematic(chassis) {
+  const m = (P && P.mechs) || (S && S.mechs) || {};
+  const f = (m.schematics || {})[chassis];
+  return f ? "/game/" + f.split("/").map(encodeURIComponent).join("/") : "";
+}
 function portrait() {
   const c = $("#ed-chassis").value, v = $("#ed-variant");
-  const img = mechImage(c), el = $("#ed-portrait");
-  el.classList.toggle("none", !img);
-  el.style.backgroundImage = img ? `url("${img}")` : "";
+  const img = mechImage(c), sch = img ? "" : mechSchematic(c), el = $("#ed-portrait");
+  el.classList.toggle("none", !img && !sch);
+  el.classList.toggle("schematic", !!sch);
+  el.dataset.msg = img || sch ? "" : "No picture of the " + c + " in the game's files";
+  el.style.backgroundImage = img || sch ? `url("${img || sch}")` : "";
   $("#ed-tag").textContent = c + (v.value ? " " + v.options[v.selectedIndex].text : "");
   renderSpec(v.value || c);
 }
@@ -703,7 +723,7 @@ function renderRoster() {
         P.pods.map(t => `<option value="${esc(t.ip)}">${esc(t.slot)}</option>`).join("") + `</select>`;
     else action = "";
     return `<div class="pilot${p.id === selected ? " sel" : ""}" data-id="${p.id}">
-      <div class="avatar${mechImage(p.chassis) ? "" : " none"}" style="${mechImage(p.chassis) ? `background-image:url('${mechImage(p.chassis)}')` : ""}"></div>
+      <div class="avatar${mechImage(p.chassis) ? "" : mechSchematic(p.chassis) ? " schematic" : " none"}" style="${(mechImage(p.chassis) || mechSchematic(p.chassis)) ? `background-image:url('${mechImage(p.chassis) || mechSchematic(p.chassis)}')` : ""}"></div>
       <div class="who"><div class="nm">${esc(p.name)}${rankBadge(careerOf(p.id))}</div><div class="mc">${esc(mechLabel(p))}</div></div>
       ${seat ? `<div class="seat-tag">${here ? "in this pod" : "in " + esc(podName(seat[0]))}</div>` : ""}
       ${action}</div>`;

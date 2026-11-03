@@ -25,7 +25,9 @@ battle; *Stop* ends it from the launcher.
 
 - **Battle.** Your callsign (eight characters - the pod's name plate; pick
   one from the roster) and 'Mech (the release's 35, by chassis, with
-  Firestorm's picture of it), the map (the release's eleven scenarios), day,
+  Firestorm's picture of it) and its paint (six schemes, eight trims - the
+  pod's own, chosen by MECH_CLASS `+0x4E`; each CPU pilot takes a trim of
+  its own), the map (the release's eleven scenarios), day,
   dusk or night, up to seven CPU pilots and their 'Mechs, where you start (on
   open ground in a ring, facing in, or at the map's drop points), whether a
   destroyed Mech drops in again (after 10 or 20 s, where it began - as the
@@ -40,7 +42,9 @@ battle; *Stop* ends it from the launcher.
   engine status, throttle, the first six weapons with their recycle bars,
   ammunition and trigger groups, and a radar - the cockpit in one window). The
   cockpit panel's three windows (lamps, displays, bar graphs - the Remote
-  I/O by wire number) on or off.
+  I/O by wire number) on or off. The **radar screen** (below): on or off,
+  its size, place or full screen on any monitor, and the page and range it
+  opens on.
 - **Controls.** The keyboard and a gamepad (below), and USB controllers:
   each control bound to a controller's axis or button by *Learn*, live
   readings beside them. The defaults are Firestorm's cockpit boards
@@ -61,7 +65,8 @@ uses them.
 | R / V | look up / down | Y | searchlight |
 | Z, - | zoom in, out | | |
 | T, L | target select, searchlight | | |
-| F1-F3 | radar, map, damage display | | |
+| F1-F3 | the pod's display keys: the radar screen's Sector, Map, Contacts | | |
+| Tab, PgUp / PgDn | the radar screen's next page; its range | | |
 
 They are the panel's own input reports (battlepod's
 `docs/COCKPIT_INTERFACE.md`): throttle `A0`, stick `A1`/`A2` (in advanced
@@ -81,13 +86,46 @@ Where: a packaged copy's `battletech\`, or battlepod's `build\`.
 | `view` | `fullscreen` | 0 | 1: borderless over the monitor `x`, `y` is on (or `monitor` = n, from 1, without them) |
 | `view` | `smooth` | 0 (1 from the launcher) | scale the picture smoothly |
 | `view` | `title` | battlepod - main view | the window's name |
+| `view` | `effects` | 1 | weapon effects: a beam, bolt or tracer for every shot and smoke behind missiles - added, as the pod drew only a muzzle flash and the hit (`src/fx.h`) |
+| `view` | `gamma` | 0 | a display curve for the 3D view's colours (2.2 lifts the dark roads and arena floors, and pales everything else); 0 draws the pod's colours straight |
 | `view` | `strip` | 0 (1 from the launcher) | the panel in a band under the picture: message line (displays `8C`-`8E`) and readout (`8F`), engine (`90`), throttle, weapons `80`-`85` (name, recycle bar, count, trigger-group lamps `4k+1`..`4k+3`), and a radar: every Mech within 500 m round yours, your heading up, from the position broadcasts (0xEC) on the network - the pod's own radar was the secondary display's, not emulated; the window is 84 of 480 taller |
+| `radar` | `show` | 0 (1 from the launcher) | the radar screen, a window of its own |
+| `radar` | `x`, `y`, `w`, `h`, `fullscreen`, `monitor`, `title` | 960 x 600, monitor 2 | as `[view]`'s |
+| `radar` | `layout` | the window's shape | `portrait`: the scope across the top, the readouts and contacts in a band beneath (480 x 640, for a screen stood on end); `landscape`: the readouts beside it (640 x 400) |
+| `radar` | `page`, `range` | 0, 1 | the page it opens on (0 Sector, 1 Map, 2 Contacts) and its range (0-4: 250 m, 500 m, 1, 2, 4 km) |
 | `panels` | `show` | 1 (0 from the launcher) | the lamp, display and bar-graph windows |
 | `lamps`, `displays`, `bargraphs` | `x`, `y`, `w`, `h` | | each of those windows |
 | `joy` | `throttle`, `stick_x` | `Firestorm Throttle.X`, `Firestorm Stick.X` | `CONTROLLER.AXIS`: a controller by USB ids (`2E8A:1001`), part of its name, or `#n`; the axis X Y Z R U or V; `-` in front reverses it |
 | `joy` | `fire1`-`fire3`, `fire_all`, `target`, `light`, `twist_left`, `twist_right`, `centre`, `view_up`, `view_down`, `zoom_in`, `zoom_out` | the cockpit boards' buttons and hat | `CONTROLLER.Bn` or `CONTROLLER.HatUp` (`HatDown`, `HatLeft`, `HatRight`); `none` for nothing |
 | `joy` | `deadzone`, `enabled` | 4, 1 | |
-| `game` | `files`, `scenario`, `vehicle`, `pilot`, `bots`, `opponents`, `env`, `arena`, `minutes`, `remote`, `remote_names`, `remote_vehicles`, `join_host`, `join_seat` | | the launcher's: the release, the last battle's choices, the seats for other PCs, and the battle last joined |
+| `game` | `files`, `scenario`, `vehicle`, `pilot`, `paint`, `accent`, `bots`, `opponents`, `env`, `arena`, `minutes`, `remote`, `remote_names`, `remote_vehicles`, `join_host`, `join_seat`, `local` | | the launcher's: the release, the last battle's choices, the seats for other PCs, the battle last joined, and whether a centre's console has a cockpit of its own (`local`, 1) |
+
+## The radar screen
+
+The pod's second screen was an Amiga board below the main monitor, driven by
+the 68020 through a shared block and a message protocol not yet decoded. The
+radar screen stands in for it, in a window of its own (on a second monitor,
+full screen, it sits where the pod had it), drawn from what the cockpit
+already receives:
+
+- **Sector** (F1): the radar round your 'Mech, your heading up - range rings,
+  the compass turning, a sweep - with the map's buildings and terrain as
+  their footprints (each model's own bounding box, placed as the console's
+  0xE4s placed it; drop pads and roads filled dimly in their own shapes, the
+  wide terrain patches left out) and every other 'Mech as a triangle along its heading, in
+  its trim's colour, with its pilot's name.
+- **Map** (F2): the whole battlefield, north up, every 'Mech on it and the
+  radar's range round yours.
+- **Contacts** (F3): every 'Mech by pilot, chassis (the ROM's vehicle
+  record), range and bearing; one not heard from for three seconds is LOST.
+
+The side panel has your heading, speed and position and the contacts. A
+window taller than it is wide - a portrait monitor, full screen, as a
+cockpit's radar screen is - gets the portrait layout: the scope across the
+top, and beneath it the page, your readouts, the contacts and the keys.
+Positions are the pods' own 0xEC broadcasts; names, chassis and paint their
+MECH_CLASS. F1-F3 are also the pod's own display buttons, sent to it as
+before; Tab steps through the pages, PgUp/PgDn the range.
 
 ## Several PCs
 
@@ -104,6 +142,21 @@ PC, and so are the careers: every person in the battle gets their line.
 Tried on one PC (the hub on the local address, so no firewall), a seat
 joined by the launcher's own join: the hub's seat 2 said hello, got the
 game, and its Mech was live beside this PC's and a CPU pilot's.
+
+**In a centre** (`firestorm/README.md`, *A centre: one console, its
+pods*) nobody types an address: on the console, the pods its Pods page has
+in service take the place of *Other PCs* - up to seven, seats from 2, or
+from 1 when *This PC* is "the operator's only" (the hub then runs with no
+cockpit of its own). Each seat gets the pod's name and the 'Mech the
+operator picks. *Start the battle* (or the Pods page's *3.0 battle*) closes
+the Firestorm console if it is up - the pods play one game at a time - starts the hub, then tells each pod to
+join (`/bt3/join`, its seat); the pod's Ready screen gives way to the
+cockpit, full screen as its setup placed it. When the battle ends - its time
+limit, or *Stop* - the hub ends their cockpits too (`hub.py --end-remote`),
+the console tells them to leave besides, and they show Ready again. Tried
+on one PC with a pod agent beside the console: seat 1 joined, its Mech live
+against a CPU pilot; the 30-second battle ended by itself and the pod went
+back to Ready; then to Firestorm, up in 11 seconds.
 
 ## The MFD board
 
@@ -147,7 +200,10 @@ finding). Nothing else is needed: the embeddable Python runs the centre.
   and the pod sends only what its own view (about 54 degrees across) can see,
   so a wider picture would show empty edges; the view is kept at 4:3.
 - **The head-up display's text, sound, the secondary display**: as in
-  battlepod's README.
+  battlepod's README. The renderer is sent only the reticle and the drop
+  bay; the text readouts and the pod's radar screen were the Amiga board's,
+  which is not emulated. The radar screen stands in for its radar (below);
+  its DAMAGE page has no stand-in yet.
 - A Mech dropping in again is its first MECH_CLASS and PLAYER_LINK sent
   again (the hub's `--respawn`); seen with two CPU pilots: each went down,
   came back ten seconds later where it began, and fought on, kills and

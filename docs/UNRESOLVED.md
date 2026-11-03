@@ -44,6 +44,34 @@ block the rest of each leg came from. The adjacency rule that decides every
 other joint cannot decide these - a foot hangs on a node with nothing below it,
 so both orientations score identically, gap 0.00 and overlap 0.42 either way.
 
+**The main view's colours.** The pod's colours are read from its own data,
+but how the TMS34082 turned them into pixels is not read from its code, and
+four choices in `src/raster.h` and `frame_draw` rest on inference:
+
+- A material's fourth value is taken as **how much of its colour a face keeps
+  turned from the light** (0.5 on most lit materials, 1.0 on most emissive
+  ones, 0.1-0.15 on buildings).
+- The scene light (draw object words 27-29) **tints lit surfaces against
+  day's**, and a quarter of day's light is kept, so night is dim rather than
+  black. How dark the pod made night is not known.
+- Colours go to the screen **straight**, 0-1 to 0-255. Model 101 gives black
+  two materials, 0.0 and 0.0125, which that makes the same; a display curve
+  would keep them apart and lift roads and arena floors to dark grey, but at
+  2.2 it washes the Mechs out to pink. `battletech.ini [view] gamma` sets one.
+- **`$020` fills the whole screen** with the `$160` colour. A hit's
+  pale-yellow frame is drawn that way; whether the pod blended it rather
+  than painting over is not known.
+- Shaded faces keep **at least 45%** of their colour: buildings' own value
+  (0.1) left them black.
+- A type 3 record carries **no scale** that has been found, so a mesa the
+  scenario places at 1.8 is drawn at 1 in the view (the radar, from the
+  0xE4, draws it at 1.8).
+- A searchlight's position comes with its **height negated** (-7.2 under a
+  Mech whose eye is at 8.2), and is used as positive.
+
+Settled by: the TMS34082 code that writes a pixel, or period footage held
+side by side.
+
 ---
 
 ## Measured and unexplained

@@ -8,6 +8,63 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **A centre, run from the console** (`firestorm/README.md`, *A centre: one
+  console, its pods*). A first-time setup (pod or console, the pod's number
+  and name, which monitor is which, its controls, Windows Firewall, start
+  with Windows); after it a pod boots straight into pod mode - **Ready** in
+  large white letters on a black main monitor, no game running
+  (`launcher/podagent.py`) - and the pods play whatever the console plays:
+  Firestorm while the console's is up, back to Ready with no game when it
+  closes (the shim's `[ready]` keeps Ready on screen while Firestorm waits
+  for a match), or a 3.0 battle the console starts, back to Ready when it
+  ends. The console's new **Pods** page swaps the centre between Firestorm,
+  a 3.0 battle and Ready in one click (starting one game closes the other),
+  with no reboot or keyboard, finds every pod on the network, and takes
+  each in or out of service; identify, settings, restart, shut down. 3.0
+  battles end their pods' cockpits (`hub.py --end-remote`) and can run with
+  no cockpit on the hub's PC.
+- **Closing the Firestorm console cleanly**: its close button, Alt+F4 or
+  Ctrl+Q ask once and close it as its Quit does, the launcher's *Close the
+  console* without asking; the report printer goes with it, the launcher
+  comes back in front, and the pods leave Firestorm for Ready - a pod's MW4
+  takes one console a run, and a console started again found them in
+  "Tesla error" before; now each console starts them afresh.
+- `fsrun` hides the console window Windows gives it when VWE's Launcher.exe
+  starts a pod's game, and shows it only to report a failure.
+
+- **Weapon effects** (`src/fx.h`, `battletech.ini [view] effects`, on by
+  default; a switch on the launcher's Display page). Not the pod's - a 3.0
+  list carries no beam, and a shot showed as a muzzle flash and the hit -
+  but every weapon fired now shows: lasers as beams, PPCs as bolts, cannon,
+  machine guns and Gauss as tracers, missiles with a smoke trail. Other
+  Mechs' shots come from their var 3 firing bits, per arm, in the colours
+  their arm models pick; this cockpit's own from the panel, whose recycle
+  bars say which weapon fired, from beside and below the eye to what the
+  reticle is on. Incoming fire is aimed at the viewer.
+- **The main view draws what the pod sends it.** Each model is run down the
+  one path its predicates choose for that thing - its variables, its distance
+  - as the renderer did (`mesh_eval`): levels of detail by distance,
+  buildings whole with their windows and lamps, rubble where one is
+  destroyed, `$460` sub-models, `$520` materials blended by distance, `$220`
+  rectangles (the line-work on the ground, which had drawn as nothing),
+  pixel and marker lights. RENDERING.md, *Running a model the way the
+  renderer does*.
+- **Paint.** A Mech's var 1 is its paint - six schemes, eight trims - from
+  MECH_CLASS `+0x4E`: `tools/hub.py --paint`, and a choice on the launcher's
+  Battle page. Every Mech used to come out red.
+- **The radar screen** (`src/radar.h`, `battletech.ini [radar]`): the pod's
+  second screen stood in for, in a window of its own - Sector (the radar,
+  heading up, with the map's footprints and every Mech by name and trim),
+  Map (the battlefield, north up) and Contacts (pilot, chassis, range,
+  bearing) on the pod's F1-F3 - from the 0xEC, MECH_CLASS and map 0xE4s the
+  cockpit receives. Landscape, or portrait for a screen stood on end (the
+  window's shape, or `[radar] layout`). On the launcher's Display page. `--snap ADDR:LEN:EVERY:
+  FILE` dumps memory as the pod runs, which is how SecCom was seen to carry
+  a map list and no live contacts.
+- **The environment in the main view**: the ground's colour and the light
+  from the pod's own list, dusk red and night blue, and the Mechs'
+  searchlights (type 5) lighting what they point at.
+
 - **A launcher.** The Firestorm launcher (`firestorm/launcher`) runs
   BattleTech 3.0 too: pick a callsign, a 'Mech, a map, day/dusk/night, up to
   seven CPU pilots and where they start, and drop in; the operator's view and
@@ -108,6 +165,54 @@ All notable changes to this project are documented here. The format follows
   Ground decals are not drawn from underneath. RENDERING.md, *The HUD*.
 
 ### Fixed
+
+- **The launcher stopped under an open window.** It ended itself when the
+  page had not pinged for 10 s, and Edge slows a page that is not in front -
+  to a timer a minute once it has been hidden a while - so after time in the
+  game or another window the server was gone: every picture a white box,
+  every option dead. The window now says when it closes (a beacon on
+  `pagehide`), a reload does not count, ten minutes of silence is the
+  fallback, and a page that loses the launcher says so.
+- **Behemoth, Behemoth II, Longbow and Victor** have no portrait in the
+  game's files. `firestorm/tools/mechbust.py` makes them from the radar's
+  turning model - the pose half a turn after it appears facing away - cut
+  to the game's portrait shape, into the game folder's `profiles\portraits`,
+  which the launcher reads after `hsh\Mechs`. Without them it shows the
+  radar's damage diagram where there is one, else a note.
+- **The drop lasted half as long as it should.** The pod's drop is two
+  climbs: the bay's picture (70) scrolled up a 720-row shaft for 7 s, then
+  9 s inside the 3D shaft (model 58, centred on the Mech) from 7 m below
+  the pad to the cockpit's 8.2. Halfway through the first, as the picture
+  stops covering the screen, the list adds `$160 0 0 0` - fill black - and
+  draws no world at all; the view drew the desert there, and skipped the
+  shaft as "the viewer's own record". Now a list with no scene item draws
+  only its HUD over the `$160` colour, and only the viewer's own Mech and a
+  missile near the eye are skipped.
+- **Weapons**: `$420` - a predicate into a model's own variable - is run.
+  The arm models set var 52 from var 3's firing bits with it and draw their
+  muzzle flash only while it says so, in blue and cyan or orange and white;
+  skipped, the flash was drawn all the time in a missing material's grey.
+  And `$160 r g b` / `$020` in the HUD stream fill the screen - the pale
+  yellow flash of a hit, one frame. A 3.0 list carries no beam: a shot is
+  the muzzle's flash, the missile in flight, and the hit's explosion.
+- **The main view was mirrored**, left for right, since it was first drawn:
+  it took the display list's third axis through the map's Y (= -Z) into a
+  rasteriser that projects left-handed. The pod's own camera says so - a pod
+  facing west has its screen's right along the map's -Y - and the radar,
+  which agrees with the pod, disagreed with the view. The view now works in
+  the list's own axes and places every record by its whole 3x3 (rows: the
+  model's axes), so a missile's pitch shows too. Shaded faces keep at least
+  45% of their colour.
+- The radar screen leaves out the 750 m terrain patches and fills the drop
+  pads and roads in their own shapes rather than as 200 m squares.
+- Polygons crossing the camera's near plane are cut there instead of
+  dropped: drop pads, roads and arena floors no longer vanish under the
+  Mech. Ground records are painted first, without the depth buffer.
+- Faces are lit in the world, not relative to the eye, so shading holds
+  still as the pilot turns.
+- A missile leaving the pilot's own Mech no longer fills the screen.
+- The sky above its image is flat, not a streaked repeat of its top row,
+  and its last row fades into the ground.
 
 - **Every Mech carried arm 501.** The arm variables were read two words
   early; the Loki's arm is 503, with the long barrel. 322 polygons now.

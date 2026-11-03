@@ -661,6 +661,17 @@ renderer keeps its sky as state; a list with no `$2C0` keeps the last.
 
 ### The head-up display
 
+**The drop, and fills.** The drop is two climbs. For 7 s (lists 12-251)
+there is no scene item at all: the HUD draws the bay (70) at `(0, y)`, y
+rising 3 a list, and from the list where the picture stops covering the
+top of the screen (y = 360) it is preceded by `$160 0 0 0`. `$160 r g b`
+sets the renderer's fill colour, `$020` fills the screen with it - the
+boot's black, and in a game the pale yellow `(1.0, 1.0, 0.8)` flash of a
+hit, one list long - and a list with no scene item draws nothing but its
+HUD over it. Then for 9 s (to list 560) the eye climbs from 7 m under the
+pad to 8.2 inside model 58, a black box 20 m across and 30 m deep centred
+on the Mech: the 3D shaft.
+
 The HUD is its own item stream: `$100 x y` sets a screen position and `$240
 id` draws an image there. In a game it is the reticle at the screen's centre
 (72, or 73-79 while it has a target); during the drop it is also 70, the bay,
@@ -929,6 +940,82 @@ strung along the horizon over sand; Urbana, from its own drop point, is tower
 blocks and low buildings - a city. Same code, same archive, different scenario
 file.
 
+### Running a model the way the renderer does
+
+The walks above choose a branch without knowing what the renderer knew. A
+frame now knows it: every record carries its thing's variables from word 33,
+the eye is in the camera record, and `mesh_eval` (`src/mesh.h`) runs a model
+**down the one path its predicates choose** - calls that return, jumps, `$460`
+sub-models pulled in, and `$300`/`$340` (skip a group facing away) falling
+through, since the depth buffer settles what they settled. Predicates are
+evaluated: `$020 v` pushes var `v`, `$040` a constant, `$080` and `$0A0` the
+distance from the eye, `$0C0` a global the renderer keeps (taken as 0; its
+four uses are blinking lights), and the operators the archive uses are `$160`
+and, `$200` equal, `$220` greater, `$260` less and `$2A0` not. That alone puts
+back most of what a map seemed to be missing:
+
+- **Levels of detail by distance.** A building tests `$080` against 100, 150,
+  200; a torso tests `$0A0` against 20 to 70 and drops from 88 polygons to 29
+  by 60 m. The fall-through path the first walker drew was the coarsest.
+- **Buildings whole.** Their windows, lamps and door stripes sit behind
+  `var 1 == 0` (intact - a destroyed one draws its rubble through `$460`
+  instead) and `var 3` (the environment: amber window lights by night).
+- **`$520` blends materials by distance** - `(destination, near, far, A, B)`,
+  A to `near`, B from `far`, both floats. A hill's line-work (model 32) goes
+  from sand to the haze's grey over 50-250 m this way; a building's dark
+  window colour is only ever reached through it, so without it they came out
+  the 0.7 grey a missing material falls back to.
+- **`$220` is drawn**: RPIX then FILL, the screen rectangle between two
+  projected corners. Models 32-35 are nothing else - 13 and 46 of them, the
+  ridges and gullies on the ground - and had drawn as nothing at all.
+  `$200` pixels and `$280`/`$2A0` markers are drawn too, unlit.
+- **A Mech's paint is its var 1**: the tens pick one of six schemes in every
+  part's material block (0 desert, 1 green, 2 black, 3 white, 4 grey, 5 red),
+  the units one of eight accent colours (red, green, blue, yellow, white,
+  black, grey, purple). It comes from MECH_CLASS `+0x4E`, which the console
+  sets and `tools/hub.py --paint` now does; left at 0 every Mech is desert
+  with red trim. The first walker fell through to the last scheme, which is
+  why every Mech used to be red.
+
+The frame also carries the environment, and the main view now uses it:
+
+- **The ground's colour** is the `$2C0` item's first triple - (0.61, 0.51,
+  0.44) by day, (0.16, 0, 0) at dusk, (0.094, 0.062, 0.094) at night - and the
+  sky image's last row fades into it.
+- **The light** is the draw object's words 27-29, the environment record's
+  `+0x20`: (0.5, 0.6, 0.7) by day, (0.094, 0, 0) at dusk, (0.03, 0.02, 0.1) at
+  night. Lit surfaces are tinted by it against day's.
+- **Searchlights** are the type 5 records of kind 3: a colour (1.0, 0.8, 0.4),
+  a direction, a position, full to 150 m and gone by 300, full within cos 10
+  degrees of the axis and gone by cos 20. Only dusk and night lists carry
+  them. Each lights the faces turned to it.
+- Faces are lit **in the world**, not as the eye sees them, so a building's
+  shaded side stays shaded as the pilot turns.
+
+**Shots are not in the list.** Neither the pod that fires nor the one hit
+gets a beam, tracer or bolt: a 3.0 shot is the arm's muzzle flash (drawn
+while var 3's firing bits, 0x30 right and 0xC0 left, are set - for one list),
+the missile in flight (113), the hit's explosion (80) and the victim's
+one-frame fill. `src/fx.h` adds visible shots on top, and says so; it takes
+its triggers from those bits and, for the cockpit's own Mech - which is not
+in its own list - from the panel's recycle bars.
+
+**And the world is drawn in the list's own axes.** Until the radar screen
+came along, every frame here was a mirror image: positions went in as (X,
+height, -Z) - the map's Y - and the rasteriser projects left-handed, so
+left and right swapped and nothing in a flat-shaded desert gave it away.
+The camera record's rows are its right, up and forward; a pod facing west
+(map heading 270) has right = (0, 0, 1), the map's -Y, and a record's 3x3 is
+the same shape, its model's x, y and z axes (the Mech a pod at heading 180
+sees has forward (0, 0, -1)). `frame_draw` now uses both as they come.
+
+Two drawing fixes go with it. A polygon crossing the camera's near plane is
+**cut there** rather than dropped - dropped, the drop pads and roads (101,
+104, 105: 200 m across) vanished whenever a corner was behind the eye - and
+what lies flat on the ground (every type 4) is painted first, in the list's
+order, without the depth buffer, since nothing standing can be hidden by it.
+Inferences in all this are listed in UNRESOLVED.md, *The main view's colours*.
+
 ## Drawing it
 
 `tools/render.py` takes a model and draws it: z-buffered flat-shaded triangles,
@@ -1001,6 +1088,30 @@ the firmware calls SecCom.
 **What is missing.** The SecCom protocol. Two routes: HLE it from the 68020
 side, or run the 61 KB Amiga program on a second CPU core — `battlepod` already
 carries a 68000 core, and Musashi supports multiple contexts.
+
+**What a game puts in it.** `--snap 4007E000:1652:100:FILE` keeps the block
+once a second while a game runs. It is cleared at `0x02138B5C` (0x674 bytes,
+its pointer kept at `0x02194452`), filled once as the game starts, and then
+barely moves:
+
+- from `+0x188`, records of 42 bytes: a word 5, a model id (41, the terrain
+  patch), x and y as words in the map's own metres, and a long that reads as
+  a size (340, 220, 150 ...) - the map display's list of ground features;
+- `+0xAC`-`+0xE6`, set up by `0x0212B8B8`: words 0xC8, 0xFFFF, 0x3C, 1000,
+  3, 3, 10000, a range (`0x02193C24` + `0x02193C28`) at `+0xCE`, and the
+  Mech's `+0x2E` at `+0xDC`;
+- `+0xB8`, which changes as the Mech turns.
+
+Nothing in the whole Amiga window carries the other Mechs' positions frame
+by frame. The display is driven by messages - `0x0212C27C` with codes
+`0x26AD`-`0x26B4` around the mode switches - so the radar's contacts reach
+the Amiga some other way, which is the protocol still to be read.
+
+**What stands in.** `src/radar.h` draws the radar screen from what the
+cockpit receives over the network instead: every Mech's 0xEC (position,
+heading), MECH_CLASS (name, vehicle record, paint) and the map's 0xE4s
+(model, place, heading, scale - drawn as each model's footprint from its
+header's box). firestorm/docs/BATTLETECH3.md, *The radar screen*.
 
 ## 3. The panel — lamps, bar graphs and soft labels
 

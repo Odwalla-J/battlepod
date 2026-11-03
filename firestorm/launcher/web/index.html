@@ -17,6 +17,7 @@
     <div class="gameswitch" title="Which game this launcher is setting up">
       <button data-game="fs" class="on">Firestorm</button><button data-game="bt3">3.0</button>
     </div>
+    <a href="#pods" class="nav only-console" data-page="pods">Pods</a>
     <a href="#pc" class="nav on" data-page="pc" data-game="fs">This PC</a>
     <a href="#displays" class="nav" data-page="displays" data-game="fs">Displays</a>
     <a href="#mfds" class="nav" data-page="mfds">MFD boards</a>
@@ -33,6 +34,26 @@
   </nav>
 
   <main>
+    <!-- Pods: the centre's, found on the network (podagent.py) -->
+    <section class="page" id="page-pods">
+      <h1>Pods</h1>
+      <p class="lead">Every pod on the network, found by itself. The pods play whatever this PC plays: start Firestorm or a 3.0 battle here and every pod in service changes over by itself, no keyboard needed. They show Ready until a match starts, and go back to Ready when the game closes.</p>
+      <div class="card pods-all">
+        <div class="card-head"><h3>Game</h3><span id="game-state"></span></div>
+        <div class="pod-btns game-btns">
+          <button class="btn" id="game-fs">Firestorm</button><button class="btn" id="game-bt3">3.0 battle</button>
+          <button class="btn ghost" id="game-ready">Back to Ready</button></div>
+        <p class="hint" id="game-hint"></p>
+      </div>
+      <div class="card pods-all">
+        <div class="card-head"><h3>All pods</h3>
+          <div class="pod-btns"><button class="btn ghost" data-all="auto">In service</button><button class="btn ghost" data-all="ready">Out of service</button>
+            <button class="btn ghost" data-all="identify">Identify</button></div></div>
+      </div>
+      <div id="pod-grid" class="pod-grid"></div>
+      <p class="hint" id="pods-hint"></p>
+    </section>
+
     <!-- This PC -->
     <section class="page on" id="page-pc">
       <h1>This PC</h1>
@@ -53,6 +74,7 @@
         <div class="row"><label>Address</label><input id="console_addr" class="wide" placeholder="e.g. 200.0.0.20">
           <span class="hint">The console PC, for its pilot roster. Its launcher must be open.</span></div>
       </div>
+      <p class="hint"><a href="/setup.html" class="link">Run the first-time setup again</a> - what this PC is, its screens, and starting with Windows.</p>
       <div class="cards">
         <div class="card"><h3>Game folder</h3><div id="pc-game" class="mono"></div><div id="pc-shim"></div></div>
         <div class="card"><h3>Network</h3><div id="pc-net"></div></div>
@@ -278,13 +300,15 @@
           <div class="portrait bt3-portrait" id="bt3-portrait"><div class="tag" id="bt3-tag"></div></div>
           <div class="row"><label>Pilot</label><input id="bt3-pilot" maxlength="8" placeholder="Callsign"><select id="bt3-roster"><option value="">From the roster...</option></select></div>
           <div class="row"><label>'Mech</label><select id="bt3-vehicle"></select></div>
+          <div class="row"><label>Paint</label><select id="bt3-paint"><option value="0">Desert</option><option value="1">Green</option><option value="2">Black</option><option value="3">White</option><option value="4">Grey</option><option value="5">Red</option></select><select id="bt3-accent"><option value="0">Red trim</option><option value="1">Green trim</option><option value="2">Blue trim</option><option value="3">Yellow trim</option><option value="4">White trim</option><option value="5">Black trim</option><option value="6">Grey trim</option><option value="7">Purple trim</option></select></div>
           <p class="hint">The pod's name plate takes eight characters.</p>
         </div>
         <div class="card">
           <h3>The battle</h3>
           <div class="row"><label>Map</label><select id="bt3-scenario"></select></div>
           <div class="row"><label>Time of day</label><select id="bt3-env"></select></div>
-          <div class="row"><label>Other PCs</label><select id="bt3-remote"><option value="0">None - only this PC's cockpit</option><option value="1">1 person on another PC</option><option value="2">2 people on other PCs</option><option value="3">3 people on other PCs</option></select></div>
+          <div class="row" id="bt3-local-row" hidden><label>This PC</label><select id="bt3-local"><option value="1">A cockpit here too</option><option value="0">The operator's only - the pods play</option></select></div>
+          <div class="row" id="bt3-others-row"><label>Other PCs</label><select id="bt3-remote"><option value="0">None - only this PC's cockpit</option><option value="1">1 person on another PC</option><option value="2">2 people on other PCs</option><option value="3">3 people on other PCs</option></select></div>
           <div class="row top" id="bt3-remote-row"><label>Their seats</label><div id="bt3-seats" class="bt3-opps"></div></div>
           <div class="row"><label>CPU pilots</label><select id="bt3-bots"></select></div>
           <div class="row top"><label>Their 'Mechs</label><div id="bt3-opponents" class="bt3-opps"></div></div>
@@ -335,7 +359,18 @@
         <div class="row"><label>Place</label><input id="bt3d-x" class="num" placeholder="auto"> , <input id="bt3d-y" class="num" placeholder="auto"><span class="hint">The window's top left on the desktop; empty for wherever Windows puts it.</span></div>
         <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-full"> Full screen, borderless, on</label><select id="bt3d-mon"></select></div>
         <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-smooth"> Smooth scaling (off: the pod's pixels, square and sharp)</label></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-effects"> Weapon effects: beams, bolts, tracers and missile smoke for every shot (added - the pod itself drew only a muzzle flash and the hit)</label></div>
         <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3d-strip"> The panel under the picture: message line, engine, throttle, the weapons - recycling, ammunition, trigger groups - and a radar</label></div>
+      </div>
+      <div class="card">
+        <h3>Radar screen</h3>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3r-show"> The pod's second screen, in a window of its own: the radar round your 'Mech, the whole map, and every contact by name, 'Mech, range and bearing</label></div>
+        <div class="row"><label>Size</label><select id="bt3r-size"><optgroup label="Landscape"><option value="640x400">640 x 400</option><option value="960x600">960 x 600</option><option value="1280x800">1280 x 800</option></optgroup><optgroup label="Portrait - a screen stood on end"><option value="480x640">480 x 640</option><option value="600x800">600 x 800</option><option value="768x1024">768 x 1024</option><option value="1080x1440">1080 x 1440</option></optgroup></select>
+          <select id="bt3r-layout"><option value="">Layout from the window's shape</option><option value="portrait">Portrait: the scope on top, the readouts beneath</option><option value="landscape">Landscape: the readouts beside it</option></select></div>
+        <div class="row"><label>Place</label><input id="bt3r-x" class="num" placeholder="auto"> , <input id="bt3r-y" class="num" placeholder="auto"></div>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="bt3r-full"> Full screen on</label><select id="bt3r-mon"></select></div>
+        <div class="row"><label>Opens on</label><select id="bt3r-page"><option value="0">Sector - the radar, your heading up</option><option value="1">Map - the battlefield, north up</option><option value="2">Contacts - every 'Mech in a table</option></select><select id="bt3r-range"><option value="0">250 m</option><option value="1">500 m</option><option value="2">1 km</option><option value="3">2 km</option><option value="4">4 km</option></select></div>
+        <p class="hint">In the cockpit, F1, F2 and F3 - the pod's own display keys - change the page, Tab steps through them, and Page Up / Page Down the radar's range. A second monitor is where the pod had it.</p>
       </div>
       <div class="card">
         <h3>The cockpit's panel</h3>
@@ -360,7 +395,8 @@
             <tr><td><span class="key">Z</span> <span class="key">-</span></td><td>Zoom in and out</td></tr>
             <tr><td><span class="key">T</span></td><td>Target select</td></tr>
             <tr><td><span class="key">L</span></td><td>Searchlight</td></tr>
-            <tr><td><span class="key">F1</span> <span class="key">F2</span> <span class="key">F3</span></td><td>Radar, map, damage display</td></tr>
+            <tr><td><span class="key">F1</span> <span class="key">F2</span> <span class="key">F3</span></td><td>The pod's display keys: the radar screen's Sector, Map and Contacts pages; <span class="key">Tab</span> steps through them</td></tr>
+            <tr><td><span class="key">PgUp</span> <span class="key">PgDn</span></td><td>The radar's range: 250 m to 4 km</td></tr>
             <tr><td><span class="key">Esc</span></td><td>Leave: closes the cockpit and ends the battle</td></tr>
           </tbody></table>
         </div>
@@ -433,5 +469,6 @@
 </footer>
 <script src="app.js"></script>
 <script src="bt3.js"></script>
+<script src="pods.js"></script>
 </body>
 </html>

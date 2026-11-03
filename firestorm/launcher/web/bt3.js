@@ -76,9 +76,17 @@ function renderBt3() {
   if (document.activeElement !== $("#bt3-files")) $("#bt3-files").value = B.game_files || "";
   $("#bt3-pilot").value = s["game.pilot"] || "";
   $("#bt3-vehicle").innerHTML = vehicleOptions(s["game.vehicle"]);
+  $("#bt3-paint").value = s["game.paint"] || "0";
+  $("#bt3-accent").value = s["game.accent"] || "0";
   $("#bt3-scenario").innerHTML = options((B.scenarios || []).map(c => [c.file, c.name]), s["game.scenario"]);
   $("#bt3-env").innerHTML = options((B.envs || []).map(e => [e.id, e.name]), s["game.env"]);
-  const maxBots = 7 - (+s["game.remote"] || 0);
+  // On a centre's console, the pods in service are the other seats (Pods page).
+  const cp = B.centre_pods || [], local = !cp.length || s["game.local"] !== "0";
+  $("#bt3-local-row").hidden = !cp.length;
+  $("#bt3-local").value = local ? "1" : "0";
+  $("#bt3-others-row").hidden = cp.length > 0;
+  $("#bt3-start").textContent = local ? "Drop in" : "Start the battle";
+  const maxBots = 8 - (local ? 1 : 0) - (cp.length || +s["game.remote"] || 0);
   $("#bt3-bots").innerHTML = options([0, 1, 2, 3, 4, 5, 6, 7].filter(n => n <= maxBots).map(n => [n, n ? `${n} CPU pilot${n > 1 ? "s" : ""}` : "None"]), Math.min(+s["game.bots"] || 0, maxBots));
   $("#bt3-remote").value = s["game.remote"] || "0";
   $("#bt3-join-host").value = s["game.join_host"] || "";
@@ -109,20 +117,23 @@ function renderOpponents() {
 }
 // Seats for people on other PCs: each a name and a Mech the operator gives.
 function renderSeats() {
-  const n = +B3["game.remote"] || 0;
+  const cp = B.centre_pods || [];
+  const n = cp.length || +B3["game.remote"] || 0, first = cp.length && B3["game.local"] === "0" ? 1 : 2;
   $("#bt3-remote-row").hidden = !n;
   const names = (B3["game.remote_names"] || "").split(","), vs = (B3["game.remote_vehicles"] || "").split(",");
+  const DEF = [8, 12, 30, 34, 4, 26, 13];
   $("#bt3-seats").innerHTML = [...Array(n).keys()].map(i =>
-    `<span class="seat3"><span class="hint">Seat ${i + 2}</span><input data-seatname="${i}" maxlength="8" value="${esc(names[i] || "Guest" + (i + 2))}">
-     <select data-seatmech="${i}">${vehicleOptions(vs[i] || [8, 12, 30][i])}</select></span>`).join("");
+    `<span class="seat3"><span class="hint">Seat ${i + first}</span>${cp.length ? `<b>${esc(cp[i])}</b>` :
+      `<input data-seatname="${i}" maxlength="8" value="${esc(names[i] || "Guest" + (i + 2))}">`}
+     <select data-seatmech="${i}">${vehicleOptions(vs[i] || DEF[i])}</select></span>`).join("");
   const put = (key, i, v, fill) => {
     const list = (B3[key] || "").split(",");
-    while (list.length < 3) list.push(fill(list.length));
+    while (list.length < Math.max(3, i + 1)) list.push(fill(list.length));
     list[i] = v.replace(/,/g, "");
     setBt3({ [key]: list.join(",") });
   };
   $$("input[data-seatname]").forEach(el => el.addEventListener("input", () => put("game.remote_names", +el.dataset.seatname, el.value, k => "Guest" + (k + 2))));
-  $$("select[data-seatmech]").forEach(el => el.addEventListener("change", () => put("game.remote_vehicles", +el.dataset.seatmech, el.value, k => String([8, 12, 30][k]))));
+  $$("select[data-seatmech]").forEach(el => el.addEventListener("change", () => put("game.remote_vehicles", +el.dataset.seatmech, el.value, k => String(DEF[k]))));
 }
 function renderPortrait() {
   const pic = bt3Picture(B3["game.vehicle"]);
@@ -163,11 +174,14 @@ $("#bt3-roster").addEventListener("change", e => {
   e.target.value = "";
 });
 $("#bt3-vehicle").addEventListener("change", e => { setBt3({ "game.vehicle": e.target.value }); renderPortrait(); });
+$("#bt3-paint").addEventListener("change", e => setBt3({ "game.paint": e.target.value }));
+$("#bt3-accent").addEventListener("change", e => setBt3({ "game.accent": e.target.value }));
 $("#bt3-scenario").addEventListener("change", e => setBt3({ "game.scenario": e.target.value }));
 $("#bt3-env").addEventListener("change", e => setBt3({ "game.env": e.target.value }));
 $("#bt3-bots").addEventListener("change", e => { setBt3({ "game.bots": e.target.value }); renderOpponents(); });
 $("#bt3-arena").addEventListener("change", e => setBt3({ "game.arena": e.target.value }));
 $("#bt3-remote").addEventListener("change", e => { setBt3({ "game.remote": e.target.value }); renderBt3(); });
+$("#bt3-local").addEventListener("change", e => { setBt3({ "game.local": e.target.value }); renderBt3(); });
 $("#bt3-join-host").addEventListener("input", e => setBt3({ "game.join_host": e.target.value.trim() }));
 $("#bt3-join-seat").addEventListener("change", e => setBt3({ "game.join_seat": e.target.value }));
 $("#bt3-join").addEventListener("click", async () => {
@@ -300,8 +314,32 @@ function renderBt3Display() {
   $("#bt3d-mon").innerHTML = mons.map(m => `<option value="${m.n}">Monitor ${m.n}${m.primary ? " (main)" : ""} - ${m.w} x ${m.h}</option>`).join("");
   $("#bt3d-mon").value = s["view.monitor"] || "1";
   $("#bt3d-smooth").checked = s["view.smooth"] !== "0";
+  $("#bt3d-effects").checked = s["view.effects"] !== "0";
   $("#bt3d-panels").checked = s["panels.show"] === "1";
+  $("#bt3r-show").checked = s["radar.show"] !== "0";
+  const rs = (s["radar.w"] || "960") + "x" + (s["radar.h"] || "600");
+  $("#bt3r-size").value = [...$("#bt3r-size").options].some(o => o.value === rs) ? rs : "960x600";
+  $("#bt3r-layout").value = s["radar.layout"] || "";
+  $("#bt3r-x").value = s["radar.x"] || ""; $("#bt3r-y").value = s["radar.y"] || "";
+  $("#bt3r-full").checked = s["radar.fullscreen"] === "1";
+  $("#bt3r-mon").innerHTML = $("#bt3d-mon").innerHTML;
+  $("#bt3r-mon").value = s["radar.monitor"] || (mons.length > 1 ? "2" : "1");
+  $("#bt3r-page").value = s["radar.page"] || "0";
+  $("#bt3r-range").value = s["radar.range"] || "1";
 }
+function bt3RadarFull() {
+  const on = $("#bt3r-full").checked, m = ((S && S.monitors) || []).find(m => m.n == $("#bt3r-mon").value);
+  if (on && m) setBt3({ "radar.fullscreen": "1", "radar.monitor": String(m.n), "radar.x": String(m.x + 20), "radar.y": String(m.y + 20) });
+  else setBt3({ "radar.fullscreen": on ? "1" : "0", "radar.monitor": $("#bt3r-mon").value });
+}
+$("#bt3r-show").addEventListener("change", e => setBt3({ "radar.show": e.target.checked ? "1" : "0" }));
+$("#bt3r-size").addEventListener("change", e => { const [w, h] = e.target.value.split("x"); setBt3({ "radar.w": w, "radar.h": h }); });
+$("#bt3r-layout").addEventListener("change", e => setBt3({ "radar.layout": e.target.value }));
+["#bt3r-x", "#bt3r-y"].forEach(id => $(id).addEventListener("change", () => setBt3({ "radar.x": $("#bt3r-x").value, "radar.y": $("#bt3r-y").value })));
+$("#bt3r-full").addEventListener("change", bt3RadarFull);
+$("#bt3r-mon").addEventListener("change", bt3RadarFull);
+$("#bt3r-page").addEventListener("change", e => setBt3({ "radar.page": e.target.value }));
+$("#bt3r-range").addEventListener("change", e => setBt3({ "radar.range": e.target.value }));
 function bt3Fullscreen() {
   // The cockpit goes full screen on the monitor holding [view] x, y: put them on the one chosen.
   const on = $("#bt3d-full").checked, m = ((S && S.monitors) || []).find(m => m.n == $("#bt3d-mon").value);
@@ -319,6 +357,7 @@ $("#bt3d-size").addEventListener("change", e => {
 $("#bt3d-full").addEventListener("change", bt3Fullscreen);
 $("#bt3d-mon").addEventListener("change", bt3Fullscreen);
 $("#bt3d-smooth").addEventListener("change", e => setBt3({ "view.smooth": e.target.checked ? "1" : "0" }));
+$("#bt3d-effects").addEventListener("change", e => setBt3({ "view.effects": e.target.checked ? "1" : "0" }));
 $("#bt3d-panels").addEventListener("change", e => setBt3({ "panels.show": e.target.checked ? "1" : "0" }));
 $("#bt3d-strip").addEventListener("change", e => {
   const ch = { "view.strip": e.target.checked ? "1" : "0" }, w = +($("#bt3d-w").value || 960);

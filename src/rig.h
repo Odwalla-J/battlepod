@@ -115,58 +115,7 @@ static void rig_joins(const float *alo, const float *ahi,
 /* ...turned by `r` (a 3x3, rows; NULL for none) and then moved to `at`. */
 static void rig_add_xf(struct mesh *out, const struct mesh *part, const float *r, const float *at)
 {
-	int vbase = out->top, mbase = out->nmat_top, i;
-
-	for (i = 0; i < part->top; i++) {
-		int d = vbase + i;
-		float x = part->vx[i], y = part->vy[i], z = part->vz[i];
-		if (!part->vset[i] || d >= MESH_VERTS) continue;
-		if (r) {
-			float rx = r[0] * x + r[1] * y + r[2] * z;
-			float ry = r[3] * x + r[4] * y + r[5] * z;
-			z = r[6] * x + r[7] * y + r[8] * z;
-			x = rx; y = ry;
-		}
-		out->vx[d] = x + at[0];
-		out->vy[d] = y + at[1];
-		out->vz[d] = z + at[2];
-		if (!out->vset[d]) out->nvert++;
-		out->vset[d] = 1;
-		if (d + 1 > out->top) out->top = d + 1;
-	}
-	for (i = 0; i < MESH_MATS; i++) {
-		int d = mbase + i;
-		if (!part->mset[i] || d >= MESH_MATS) continue;
-		out->mr[d] = part->mr[i];
-		out->mg[d] = part->mg[i];
-		out->mb[d] = part->mb[i];
-		out->mkind[d] = part->mkind[i];
-		if (!out->mset[d]) out->nmat++;
-		out->mset[d] = 1;
-		if (d + 1 > out->nmat_top) out->nmat_top = d + 1;
-	}
-	for (i = 0; i < part->npoly; i++) {
-		const struct mesh_poly *p = &part->poly[i];
-		struct mesh_poly *q;
-		int j, ok = 1;
-
-		if (out->npoly >= MESH_POLYS) break;
-		q = &out->poly[out->npoly];
-		q->n = p->n;
-		for (j = 0; j < p->n; j++) {
-			int v = vbase + p->v[j];
-			if (v >= MESH_VERTS || !out->vset[v]) { ok = 0; break; }
-			q->v[j] = (uint16_t)v;
-		}
-		if (!ok) continue;
-		q->mat = (uint16_t)(mbase + p->mat);
-		out->npoly++;
-	}
-	if (out->top < vbase) out->top = vbase;
-	/* Leave a gap so the next part's slots cannot collide with this one's. */
-	if (out->top < vbase + part->top) out->top = vbase + part->top;
-	if (out->nmat_top < mbase + MESH_MATS && mbase + part->nmat_top > out->nmat_top)
-		out->nmat_top = mbase + part->nmat_top;
+	mesh_merge(out, part, r, at);
 }
 
 static void rig_add(struct mesh *out, const struct mesh *part, const float *at)

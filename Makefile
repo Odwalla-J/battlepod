@@ -33,7 +33,7 @@ all: $(BUILD)/battlepod.exe
 $(BUILD)/battlepod.exe: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) -lm $(NETLIBS)
 
-HDRS := src/rio.h src/mesh.h src/raster.h src/rig.h src/scene.h
+HDRS := src/rio.h src/mesh.h src/raster.h src/rig.h src/scene.h src/fx.h
 
 $(BUILD)/battlepod.o: src/battlepod.c $(HDRS) $(BUILD)/m68kops.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) -c -o $@ $<
@@ -106,7 +106,7 @@ $(BUILD)/cockpit.exe: $(COCKPIT_OBJS)
 	@test -n "$(SDL_LIBS)" || { echo "cockpit needs SDL2"; exit 1; }
 	$(CC) $(CFLAGS) -o $@ $(COCKPIT_OBJS) -static $(SDL_LIBS) -lm $(NETLIBS) $(if $(NETLIBS),-lwinmm,)
 
-$(BUILD)/cockpit.o: src/battlepod.c $(HDRS) src/paneldraw.h $(BUILD)/m68kops.h | $(BUILD)
+$(BUILD)/cockpit.o: src/battlepod.c $(HDRS) src/paneldraw.h src/radar.h src/fx.h $(BUILD)/m68kops.h | $(BUILD)
 	$(CC) $(CFLAGS) $(INC) $(SDL_CFLAGS) -DBATTLEPOD_SDL -c -o $@ $<
 
 view: $(BUILD)/view.exe

@@ -114,7 +114,11 @@ class Ini:
 SETTINGS = [
     ("view", "x", ""), ("view", "y", ""), ("view", "w", "960"), ("view", "h", "888"),
     ("view", "fullscreen", "0"), ("view", "monitor", "1"), ("view", "smooth", "1"), ("view", "strip", "1"),
+    ("view", "effects", "1"),
     ("panels", "show", "0"),
+    ("radar", "show", "1"), ("radar", "x", ""), ("radar", "y", ""), ("radar", "w", "960"), ("radar", "h", "600"),
+    ("radar", "fullscreen", "0"), ("radar", "monitor", "2"), ("radar", "page", "0"), ("radar", "range", "1"),
+    ("radar", "layout", ""),
     ("lamps", "x", ""), ("lamps", "y", ""), ("displays", "x", ""), ("displays", "y", ""),
     ("bargraphs", "x", ""), ("bargraphs", "y", ""),
     ("joy", "enabled", "1"), ("joy", "deadzone", "4"),
@@ -126,10 +130,11 @@ SETTINGS = [
     ("joy", "centre", "Firestorm Throttle.B1"), ("joy", "view_up", "Firestorm Stick.HatUp"),
     ("joy", "view_down", "Firestorm Stick.HatDown"), ("joy", "zoom_in", ""), ("joy", "zoom_out", ""),
 ]
-BATTLE = [("scenario", "BadLands-16"), ("vehicle", "0"), ("pilot", "Pilot"), ("bots", "2"),
+BATTLE = [("scenario", "BadLands-16"), ("vehicle", "0"), ("pilot", "Pilot"), ("paint", "0"), ("accent", "0"),
+          ("bots", "2"),
           ("opponents", "8,12,30,34,4,26,13"), ("env", "0"), ("arena", "1"), ("minutes", "0"),
           ("remote", "0"), ("remote_names", "Guest2,Guest3,Guest4"), ("remote_vehicles", "8,12,30"),
-          ("join_host", ""), ("join_seat", "2"), ("respawn", "10")]
+          ("join_host", ""), ("join_seat", "2"), ("respawn", "10"), ("local", "1")]
 HUB_PORT = 5170
 
 
@@ -139,6 +144,7 @@ class BT3:
         self.project = project          # where to look for a release when none is set
         self.proc = None                # the battle this PC runs (the hub)
         self.joined = None              # this PC's cockpit in another PC's battle
+        self.seats = []                 # the centre's pods' seats in the battle this PC runs
 
     # ---- where things are
     @property
@@ -289,7 +295,12 @@ class BT3:
         d = json.loads(out)
         return [p["ProcessId"] for p in (d if isinstance(d, list) else [d])]
 
-    def start(self, body, human_args=""):
+    def start(self, body, human_args="", pods=None):
+        """The battle, on this PC's hub. pods, on a centre's console, is the
+        pods in service - each a person's seat ({"name", ...}), taking the
+        place of the "other PCs" setting; the caller tells them to join
+        (self.seats: their seat numbers, in that order). game.local = 0
+        leaves this PC without a cockpit of its own: the operator's."""
         if not self.available:
             raise ValueError("battlepod's emulator is not with this launcher")
         for f in ("cockpit.exe", "battlepod.exe"):
@@ -297,6 +308,13 @@ class BT3:
                 raise ValueError("%s is not built (in the battlepod repository: make && make cockpit)" % f)
         if body:
             self.save(body)
+        # What the cockpit is not told it takes as its own default; tell it
+        # the launcher's (the strip, the radar window).
+        ini = self.ini()
+        for sec, key, d in SETTINGS:
+            if d != "" and ini.get(sec, key) is None:
+                ini.set(sec, key, d)
+        ini.save()
         gf = self.game_files()
         if not self.is_game_files(gf):
             raise ValueError("where is the release? Set its Game Files folder on the BattleTech 3.0 page")
@@ -307,17 +325,31 @@ class BT3:
             os.remove(self.state_path())
         except OSError:
             pass
-        remote = max(0, min(3, int(s["game.remote"] or 0)))
-        bots = max(0, min(7 - remote, int(s["game.bots"] or 0)))
+        local = s["game.local"] != "0" or pods is None
+        remote = max(0, min(3, int(s["game.remote"] or 0))) if pods is None else min(len(pods), 8 - local)
+        bots = max(0, min(8 - local - remote, int(s["game.bots"] or 0)))
+        if not local and not remote:
+            raise ValueError("no pod is in service, and this PC has no cockpit: put a pod in service (Pods page)")
         opp = [v for v in (s["game.opponents"] or "").split(",") if v.strip().isdigit()]
         rv = [v for v in (s["game.remote_vehicles"] or "").split(",") if v.strip().isdigit()]
         rn = [n for n in (s["game.remote_names"] or "").split(",")]
-        vehicles = [str(int(s["game.vehicle"] or 0))] + (rv + ["8"] * 3)[:remote] + (opp + ["8"] * 8)[:bots]
+        if pods is not None:            # the operator's seat list is for the pods it names, in order
+            rn = [re.sub(r"[^ -~]", "", p.get("pilot") or p.get("name") or "").replace(",", "")[:8] for p in pods]
+        vehicles = [str(int(s["game.vehicle"] or 0))] + (rv + ["8", "12", "30", "34", "4", "26", "13"])[:remote] + (opp + ["8"] * 8)[:bots]
         names = ([s["game.pilot"] or "Pilot"] + [(rn[i] if i < len(rn) and rn[i] else "Guest%d" % (i + 2))
                                                  for i in range(remote)] + BOT_NAMES[:bots])
-        argv = [sys.executable, os.path.join(self.home[2], "hub.py"), "--human", "--bots", str(bots),
+        # The person's paint, then each other Mech in desert with an accent
+        # of its own - the next free one after theirs (hub.py, --paint).
+        accent = max(0, min(7, int(s["game.accent"] or 0)))
+        paint = [str(max(0, min(5, int(s["game.paint"] or 0))) * 10 + accent)]
+        paint += [str((accent + 1 + i) % 8) for i in range(remote + bots)]
+        if not local:                   # the first entries were this PC's cockpit's
+            vehicles, names, paint = vehicles[1:], names[1:], paint[1:]
+        self.seats = [i + 1 + local for i in range(remote)]
+        argv = [sys.executable, os.path.join(self.home[2], "hub.py")] + (["--human"] if local else []) + [
+                "--bots", str(bots),
                 "--scenario", s["game.scenario"] or "BadLands-16", "--env", str(int(s["game.env"] or 0)),
-                "--vehicles", ",".join(vehicles), "--names", ",".join(names),
+                "--vehicles", ",".join(vehicles), "--names", ",".join(names), "--paint", ",".join(paint),
                 "--state", self.state_path(), "--bin", self.home[1], "--logs", self.logs()]
         if s["game.arena"] == "1":
             argv.append("--arena")
@@ -327,6 +359,8 @@ class BT3:
             argv += ["--human-args", human_args]
         if remote:
             argv += ["--remote", str(remote), "--listen", "0.0.0.0", "--port", str(HUB_PORT)]
+        if pods is not None:
+            argv.append("--end-remote")
         minutes = float(s["game.minutes"] or 0)
         if minutes > 0:
             argv += ["--seconds", str(int(minutes * 60) + 20)]     # the drop takes a little
@@ -335,9 +369,14 @@ class BT3:
         self.proc = subprocess.Popen(argv, cwd=self.home[0], env=env, stdout=log, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, creationflags=0x08000000 | 0x00000200)
         log.close()
+        if not local:
+            return "Starting the battle on %s: %s in the pods, %d CPU pilot%s." % (
+                s["game.scenario"], ", ".join(names[:remote]), bots, "" if bots == 1 else "s")
         msg = ("Starting %s on %s against %d CPU pilot%s: the cockpit opens in a few seconds, and the Mech drops in "
                "(click its window if the keys do nothing)." % (names[0], s["game.scenario"], bots, "" if bots == 1 else "s"))
-        if remote:
+        if pods:
+            msg += " The pods join in seats %s." % ", ".join(map(str, self.seats))
+        elif remote:
             msg += " Seats %s wait for the other PCs: Join, this PC's address, that seat." % ", ".join(
                 str(n) for n in range(2, 2 + remote))
         return msg
@@ -353,8 +392,8 @@ class BT3:
         host, seat = (s["game.join_host"] or "").strip(), int(s["game.join_seat"] or 2)
         if not re.match(r"^[0-9A-Za-z.-]+$", host):
             raise ValueError("which PC runs the battle? Its address, as its launcher's This PC page shows it")
-        if not 2 <= seat <= 8:
-            raise ValueError("a seat from 2 to 8")
+        if not 1 <= seat <= 8:
+            raise ValueError("a seat from 1 to 8")
         gf = self.game_files()
         if not self.is_game_files(gf):
             raise ValueError("where is the release? Set its Game Files folder on this page")
@@ -382,6 +421,23 @@ class BT3:
                            capture_output=True, creationflags=0x08000000)
             time.sleep(0.5)
         self.proc = None
+
+    def stop_joined(self):
+        """Only the cockpits that joined another PC's battle - not a battle
+        this PC runs (whose cockpits reach its hub on 127.0.0.1)."""
+        if self.joined and self.joined.poll() is None:
+            self.joined.kill()
+        self.joined = None
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='cockpit.exe'\" | Where-Object { $_.CommandLine -match "
+              "'--net ' -and $_.CommandLine -notmatch '--net 127[.]' } | Select-Object -ExpandProperty ProcessId")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                                 timeout=15, creationflags=0x08000000).stdout.split()
+        except (OSError, subprocess.TimeoutExpired):
+            out = []
+        if out:
+            subprocess.run(["taskkill", "/F"] + sum([["/PID", p] for p in out], []),
+                           capture_output=True, creationflags=0x08000000)
 
     def battle(self):
         try:

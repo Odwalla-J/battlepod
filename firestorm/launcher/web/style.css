@@ -169,6 +169,8 @@ pre#log { background: #000; border: 1px solid #4a4d47; padding: 10px; height: 22
 .editor .row > label:first-child { width: 70px; }
 .portrait { height: 150px; margin: -4px -6px 12px; border: 2px solid #6b6e68; background: #fff center 30% / cover no-repeat; position: relative; }
 .portrait.none { background: #0b0c0a; display: grid; place-items: center; color: #4a4d47; font: 15px var(--head); }
+.portrait.none::before { content: attr(data-msg); padding: 0 24px 18px; text-align: center; }
+.portrait.schematic { background: #050605 center / contain no-repeat; }
 .portrait .tag { position: absolute; left: 0; bottom: 0; padding: 3px 10px; background: rgba(0,0,0,.85); color: var(--accent2);
   font: 13px var(--head); letter-spacing: .5px; border-top-right-radius: 6px; }
 .pilot { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-bottom: 1px solid #2c2e2a; cursor: pointer; }
@@ -177,6 +179,7 @@ pre#log { background: #000; border: 1px solid #4a4d47; padding: 10px; height: 22
 .pilot:last-child { border-bottom: none; }
 .avatar { width: 92px; height: 40px; flex: none; border: 1px solid #6b6e68; background: #fff center 25% / cover no-repeat; }
 .avatar.none { background: #0b0c0a; }
+.avatar.schematic { background-color: #050605; background-size: contain; background-position: center; }
 .pilot .who { flex: 1; min-width: 0; }
 .pilot .nm { font: 15px var(--head); color: #fff; letter-spacing: .4px; }
 .pilot .mc { color: var(--muted); font-size: 12.5px; font-weight: 700; }
@@ -301,3 +304,16 @@ pre#log { background: #000; border: 1px solid #4a4d47; padding: 10px; height: 22
 .key.listening { color: #000; background: var(--accent); }
 
 .keys3 .key:hover { border-color: #9ea29a; color: inherit; }
+
+/* the Pods page: a card per pod */
+.pod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; margin-bottom: 12px; }
+.pod-card { background: var(--panel); border: 2px solid var(--rule); border-radius: 4px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pod-card.off { border-color: #5a5e57; opacity: .7; }
+.pod-top { display: flex; align-items: center; gap: 12px; }
+.pod-top .pill { margin-left: auto; }
+.pod-num { font: 30px var(--head); color: var(--accent); min-width: 34px; text-align: center; text-shadow: 0 0 6px rgba(255,90,20,.5); }
+.pod-name { font: 17px var(--head); color: #fff; letter-spacing: .5px; }
+.pod-mode, .pod-tools, .pod-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pod-note { min-height: 18px; }
+.pill.live { color: var(--accent2); border-color: rgba(255,160,64,.7); }
+a.link { color: var(--accent2); }

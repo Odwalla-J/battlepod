@@ -125,6 +125,22 @@ stay in the game folder; `--report` writes `profiles\MECHS.md`, a table of
 every variant. The launcher's Pilots page shows a 'Mech's tonnage, class,
 ratings and weapons from it under the portrait.
 
+### Portraits the game does not have
+
+`hsh\Mechs` has a portrait of every chassis but Behemoth, Behemoth II,
+Longbow and Victor. `tools/mechbust.py --game C:\path\to\MW4` makes
+them from the 'Mech the radar turns while a pilot is LOADed: it watches the
+radar window from before LOAD, sees the 'Mech appear - always facing away,
+square-on - and the turn come round (about 2.3 s, 25 poses), takes the pose
+half a turn on, and cuts it to the game's own portrait shape: 800 x 250, on
+white, head to waist. Checked against the Atlas, whose game portrait it
+matches. They go in the game folder, `profiles\portraits\<chassis>.png`,
+where the launcher looks after `hsh\Mechs`; `--only` names others, and
+`--keep-frames` keeps every pose in `profiles\mechcat\bust\`. About 40 s a
+'Mech, driving the console's window as `mechcat.py` does. The radar draws
+the 'Mech in the seated pilot's camo, so these come in that, not the
+portraits' own.
+
 ### Profiles
 
 The roster lives on the console PC, in `profiles\profiles.json` beside the
@@ -172,6 +188,91 @@ It edits `shim.ini`, `options.ini` and `ctcl.ini` in place, keeping their
 comments and the keys it does not know, with the old file as `.bak`. It is
 a page served on `127.0.0.1` in an Edge app window, standard library only;
 it stops when the window closes.
+
+## A centre: one console, its pods
+
+Every PC gets the same packaged copy (`make package`). The first time
+`Firestorm.exe --auto` runs - or **Start with Windows**, which the setup
+adds - it opens the **first-time setup** (`launcher/web/setup.html`):
+
+- **Pod or console.**
+- A pod's **number and name** (the console lists pods by them; the name
+  shows under Ready).
+- A pod's **screens**: click the monitor the pilot looks through (the main
+  view) and the one with the cockpit screens. Firestorm's view goes full
+  screen on the first and its MFDs, radar and plasma sign are laid out on the
+  second (the Displays page's *Arrange*); 3.0's view and radar likewise.
+- Its **controls**, live, to check they are seen.
+- **Network**: one button lets the centre's programs through Windows
+  Firewall (Windows asks for an administrator once) - UDP 5197, 5198 and
+  5170, TCP 8790 and 8795, and MW4, Launcher.exe, mw4print, cockpit and
+  battlepod.
+- **Start with Windows**: a shortcut in the user's Startup folder to
+  `Firestorm.exe --auto`.
+
+From then on a **pod** boots into pod mode with no window: every monitor
+black, **Ready** in large white letters on the main one, no cursor
+(`launcher/podagent.py`), with no game running. The pods play whatever the
+console plays: when the console starts Firestorm they start Firestorm's pod
+side - the console waits for its pods before it opens - and leave it, back
+to Ready with no game, when it closes; when the console starts a 3.0 battle
+they join it, and come back to Ready when it ends. While Firestorm's
+MW4 waits for a match the shim paints the same Ready on its main view
+(`shim.ini [ready] text`, set by the pod), so the pilot sees no change; a
+mission's view is the game's own, and Ready comes back after it. A game that
+falls over while it should be running is started again.
+
+The **console** boots into the launcher, on its **Pods** page. It finds the
+pods by itself - each broadcasts a beacon on UDP 5198, the console asks
+"who" on 5197, which also tells each pod where the console is for the pilot
+roster and careers - and shows what each one is doing. The **Game** card
+picks what the centre plays:
+
+| Button | What happens |
+|---|---|
+| Firestorm | Ends a 3.0 battle if one is on, then starts the Firestorm console and its pods' Firestorm |
+| 3.0 battle | Closes Firestorm if it is up (a match on ends), then starts a 3.0 battle with the 3.0 page's Battle settings; the pods join it |
+| Back to Ready | Closes whichever is on; the pods show Ready with no game |
+
+Starting one game closes the other first, so changing over is one click,
+about fifteen seconds, with no keyboard and no reboot. Per pod, or for all
+at once:
+
+| Button | What the pod does |
+|---|---|
+| In service | Plays the console's game, whichever it is (the default) |
+| Out of service | Neither game, whatever the console plays; Ready |
+| Identify | Its Ready turns amber for six seconds |
+| Settings | Opens the launcher's window over its Ready screen, for whoever is at the pod |
+| More... | Restart its game, restart the PC, shut it down |
+
+**Firestorm**: starting it adds every pod in service to the console's list
+(`ctcl.ini [teslas]`; a pod out of service is turned off in it), tells them
+to start Firestorm and waits until they are
+up (about 15 s), then starts the console. Closing it - *Back to Ready* on
+the Pods page, the console window's close button, Alt+F4 or Ctrl+Q (the last
+three ask first) - closes it as its own Quit does, closes the report printer,
+and brings the launcher back in front. However it closes, the pods leave
+Firestorm within a couple of seconds and show Ready with no game - which
+also suits the game: a pod's MW4 takes one console a run, so the next
+console finds every pod freshly started. Closing mid-match ends the match
+on the pods the same way. The console's "who" carries whether it is up, so
+a pod that missed being told catches up within seconds.
+
+**3.0**: the pods in service (with 3.0 installed) are the battle's seats.
+The 3.0 page's Battle tab seats them - seat
+by seat, each with the 'Mech the operator picks - and *This PC* chooses
+whether the console has a cockpit of its own or is the operator's only.
+*Start the battle* there, or *3.0 battle* on the Pods page, tells each pod to
+join; when the battle ends (its time limit, *Stop*, *Back to Ready*, or
+*Firestorm*) their cockpits close and they show Ready again.
+
+The pod's commands are HTTP on TCP 8795 (`GET /status`; `POST /mode` (`auto` or `ready`), `/firestorm`,
+`/bt3/join`, `/bt3/leave`, `/identify`, `/settings`, `/restart`, `/power`),
+answered only from the centre's own (private) network.
+
+For an unattended pod, Windows itself should sign in on its own (`netplwiz`)
+and not sleep; the pod keeps its displays awake while it runs.
 
 ## Running a centre on one PC
 
@@ -373,6 +474,7 @@ Optional, beside the game. A section can be specialised by role -
 | `main` | `hud_4x3` | 1 | at a size that is not 4:3, draw the HUD at its own 4:3 shape in the middle (the target's box stays on the target); 0: stretched |
 | `main` | `max_size` | 2048 | the largest side Direct3D draws; a larger view is drawn at its shape within it and scaled up |
 | `main` | `gpu_present` | 1 | the card blits the view to the window (no read-back); 0 reads each frame back and draws it with GDI, as the MFDs and radar are |
+| `ready` | `text`, `sub` | (none) | a pod's main view while it waits for the console: `text` large and white on black, `sub` small and grey under it; none, the game's own idle screen. The pod agent sets them |
 | `mfd1`..`mfd5`, `radar`, `mfd_surface` | `x`, `y`, `w`, `h`, `borderless` | on the second monitor | each cockpit window |
 | `mfd` | `tiles` | `L:R,L:G,L:B,R:R,R:G` | which part of the 1280x480 MFD surface each MFD shows: head `L`/`R`, then channel `R`/`G`/`B`, or `C` for the head in colour |
 | `mfd` | `tint` | `FFFFFF` | colour of the monochrome MFDs, e.g. `40FF60` for green phosphor |
