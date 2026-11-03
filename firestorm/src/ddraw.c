@@ -4312,7 +4312,10 @@ static DWORD WINAPI rio_main(LPVOID p)
  * a name it drew large on rows 8-21 - over the name's last rows - or small
  * on rows 12-18, touching them. So when the boxes come, the name is written
  * again small (5x7) on rows 10-16, the same way into the same stream;
- * seated, it stays as the game drew it. */
+ * seated, it stays as the game drew it. The place and score the game writes
+ * in the boxes - the place a little off the middle, the score to the right
+ * - are put in the middle of theirs instead, and the spaces it rubs them out
+ * with become a clear of the box's inside. */
 #define PL_GAME_W 112		/* the game's sign */
 #define PL_MAX_W 160
 #define PL_H 32
@@ -4394,6 +4397,7 @@ static char g_pl_name[32];		/* the name on the sign, as the game wrote it */
 static char g_pl_shown[40];		/* the rank line on it now */
 static int g_pl_ranks = -1, g_pl_cx, g_pl_cy, g_pl_font, g_pl_inside;
 static int g_pl_big, g_pl_shrink;	/* a name is on the sign; the match's boxes are coming under it */
+static int g_pl_boxes;			/* the match's boxes are on the sign */
 static CRITICAL_SECTION g_pl_feed;		/* one writer at a time: the game, or the rank */
 
 static void plasma_feed(const uint8_t *b, DWORD n);
@@ -4465,6 +4469,39 @@ static void plasma_shrink(void)
 	g_pl_inside = 0;
 }
 
+/* Text the game writes in the match's boxes (row 20): the place, the score,
+ * or the spaces it rubs them out with - in the middle of its box instead,
+ * or for the spaces the box's inside cleared. 1 if done. */
+static int plasma_box_text(const uint8_t *b, DWORD n)
+{
+	uint8_t out[48];
+	int k = 0, x0, x1, blank = 1, w, x;
+	DWORD i;
+
+	if (!g_pl_boxes || g_pl_cy != 20 || !n || n > 8) return 0;
+	for (i = 0; i < n; i++) {
+		if (b[i] == 0x1B) return 0;
+		if (b[i] != ' ') blank = 0;
+	}
+	if (g_pl_cx < 42 + g_pl_dx) x0 = 27 + g_pl_dx, x1 = 42 + g_pl_dx;	/* the place's box */
+	else x0 = 42 + g_pl_dx, x1 = 93 + g_pl_dx;				/* the score's */
+	if (blank) {
+		out[k++] = 0x1B; out[k++] = 0x78; out[k++] = 0;
+		out[k++] = (uint8_t)(x0 + 1); out[k++] = 20; out[k++] = (uint8_t)(x1 - 1); out[k++] = 29;
+	} else {
+		w = (int)n * 6 - 1;			/* the last letter's gap is not the text's */
+		x = x0 + 1 + ((x1 - x0 - 1) - w) / 2;
+		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = 21;		/* rows 21-27 of 20-29 */
+		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)(x > x0 + 1 ? x : x0 + 1);
+		for (i = 0; i < n; i++) out[k++] = b[i];
+		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = 20;		/* the game's row, as it left it */
+	}
+	g_pl_inside = 1;
+	plasma_feed(out, k);
+	g_pl_inside = 0;
+	return 1;
+}
+
 /* Now and then, from the frame loop: a pilot promoted since the game last
  * wrote the sign shows their new rank at once. */
 static void plasma_poll(void)
@@ -4489,6 +4526,10 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 	int k = 0, told = 0;
 
 	EnterCriticalSection(&g_pl_feed);
+	if (!g_pl_inside && plasma_box_text(b, n)) {
+		LeaveCriticalSection(&g_pl_feed);
+		return;
+	}
 	EnterCriticalSection(&g_pl_lock);
 	for (i = 0; i < n; i++) {
 		uint8_t c = b[i];
@@ -4514,7 +4555,7 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 				memset(g_pl, 0, sizeof g_pl);
 				g_pl_cx = g_pl_cy = 0;
 				g_pl_shown[0] = 0;
-				if (!g_pl_inside) g_pl_name[0] = 0, g_pl_big = 0;
+				if (!g_pl_inside) g_pl_name[0] = 0, g_pl_big = 0, g_pl_boxes = 0;
 				break;
 			case 0x52: g_pl_cx = cmd[2]; break;
 			case 0x51: g_pl_cy = cmd[2]; break;
@@ -4522,7 +4563,10 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 			case 0x58: pl_rect(cmd[2], cmd[3], cmd[4], cmd[5], 0, 1); break;
 			case 0x78:
 				pl_rect(cmd[3], cmd[4], cmd[5], cmd[6], 1, cmd[2] != 0);
-				if (!g_pl_inside && g_pl_big && cmd[4] >= 16) g_pl_shrink = 1;	/* the match's boxes */
+				if (!g_pl_inside && cmd[4] >= 16) {		/* the match's boxes */
+					g_pl_boxes = 1;
+					if (g_pl_big) g_pl_shrink = 1;
+				}
 				break;
 			}
 			have = 0;

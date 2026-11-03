@@ -36,6 +36,7 @@ class Sign {
     this.cmd = []; this.need = 0; this.inText = false;
     this.cx = 0; this.cy = 0; this.font = 0; this.name = ""; this.shown = ""; this.inside = false;
     this.big = false; this.shrink = false;  // a name on the sign; the match's boxes coming under it
+    this.boxes = false;                     // the match's boxes on the sign
     this.bytes = [];
   }
   dot(x, y, on) { if (x >= 0 && x < this.w && y >= 0 && y < PL_H) this.dots[y * this.w + x] = on; }
@@ -60,6 +61,7 @@ class Sign {
   // One write from the game (or the rank line's own), as plasma_feed takes
   // it: the game's x's moved across, and kept as moved (what a real sign gets).
   feed(b) {
+    if (!this.inside && this.boxText(b)) return;
     for (let c of b) {
       const have = this.cmd.length, m1 = this.cmd[1];
       if (have && !this.inside && ((have === 2 && m1 === 0x52) || (m1 === 0x58 && (have === 2 || have === 4)) ||
@@ -74,14 +76,17 @@ class Sign {
         if (this.cmd.length < this.need) continue;
         const m = this.cmd;
         switch (m[1]) {
-          case 0x40: this.dots.fill(0); this.cx = this.cy = 0; this.shown = ""; if (!this.inside) { this.name = ""; this.big = false; } break;
+          case 0x40: this.dots.fill(0); this.cx = this.cy = 0; this.shown = ""; if (!this.inside) { this.name = ""; this.big = false; this.boxes = false; } break;
           case 0x52: this.cx = m[2]; break;
           case 0x51: this.cy = m[2]; break;
           case 0x4B: this.font = m[2]; break;
           case 0x58: this.rect(m[2], m[3], m[4], m[5], 0, 1); break;
           case 0x78:
             this.rect(m[3], m[4], m[5], m[6], 1, m[2] !== 0 ? 1 : 0);
-            if (!this.inside && this.big && m[4] >= 16) this.shrink = true;     // the match's boxes
+            if (!this.inside && m[4] >= 16) {    // the match's boxes
+              this.boxes = true;
+              if (this.big) this.shrink = true;
+            }
             break;
         }
         this.cmd = [];
@@ -104,6 +109,22 @@ class Sign {
       }
       this.rank(true);
     }
+  }
+  // The game's place or score in the boxes (row 20), or the spaces that rub
+  // them out: in the middle of its box, or the box's inside cleared.
+  boxText(b) {
+    if (!this.boxes || this.cy !== 20 || !b.length || b.length > 8 || b.includes(0x1B)) return false;
+    const [x0, x1] = this.cx < 42 + this.dx ? [27 + this.dx, 42 + this.dx] : [42 + this.dx, 93 + this.dx];
+    let out;
+    if (b.every(c => c === 0x20)) out = [0x1B, 0x78, 0, x0 + 1, 20, x1 - 1, 29];
+    else {
+      const x = x0 + 1 + Math.trunc(((x1 - x0 - 1) - (b.length * 6 - 1)) / 2);
+      out = [0x1B, 0x51, 21, 0x1B, 0x52, Math.max(x, x0 + 1), ...b, 0x1B, 0x51, 20];
+    }
+    this.inside = true;
+    this.feed(out);
+    this.inside = false;
+    return true;
   }
   // The name again, small, on rows 10-16 - the match's boxes take 19-30.
   small() {

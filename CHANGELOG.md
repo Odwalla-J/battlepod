@@ -37,7 +37,8 @@ All notable changes to this project are documented here. The format follows
   sign's window and in the bytes the control port passes on, and the rank
   line takes more stars - one for a Sergeant, one more each rank up, six for
   a General. In a match the name goes small, just above the place and
-  score boxes, which drew over a large name's last rows.
+  score boxes, which drew over a large name's last rows, and the place and
+  score sit in the middle of their boxes.
 - `fsrun` hides the console window Windows gives it when VWE's Launcher.exe
   starts a pod's game, and shows it only to report a failure.
 

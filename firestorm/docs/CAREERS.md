@@ -91,7 +91,10 @@ font and place put back), so a real sign fed from the control port shows it
 too. In a match, when the game puts its place and score boxes under the name
 (rows 19-30, over the last rows of a large name), the shim writes the name
 again small on rows 10-16, between the rank and the boxes; seated, it stays
-as the game drew it. `[plasma] ranks = 0` leaves the sign as the game draws it (the
+as the game drew it. The place and score go in the middle of their boxes
+(the game puts the place a little off the middle and the score to the
+right), and the spaces the game rubs them out with become a clear of the
+box's inside. `[plasma] ranks = 0` leaves the sign as the game draws it (the
 launcher's **Plasma sign** page has the switch).
 
 The launcher's Plasma sign page shows the sign for every rank, and for any
