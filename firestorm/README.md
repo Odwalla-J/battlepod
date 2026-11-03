@@ -498,6 +498,7 @@ Optional, beside the game. A section can be specialised by role -
 | `pad` | `enabled`, `index`, `deadzone`, `invert_y` | 1, 0, 7000, 0 | the gamepad |
 | `plasma` | `enabled`, `port` | 1 with `-tmfds`, 2 | the virtual plasma sign on `\\.\com<port>` |
 | `plasma` | `x`, `y`, `w`, `h`, `borderless` | on the second monitor, 672x192 | the sign's window |
+| `plasma` | `width` | 128 | the sign's dots across, 112 to 160: 112 is the game's own sign, 128 an LED matrix's; the game's picture is moved to the middle, in the window and in the bytes sent to the control port |
 | `plasma` | `ranks` | 1 | the pilot's rank on the sign's top row, from `profiles\ranks.ini` ([docs/CAREERS.md](docs/CAREERS.md)) |
 | `print` | `to_file` | for a printer named \*PDF\* or \*XPS\* | 1: give each battle report a file of its own instead of the printer asking where; 0: never |
 | `print` | `folder` | `reports` beside the game | where those files go |

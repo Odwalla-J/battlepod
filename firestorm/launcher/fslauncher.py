@@ -129,7 +129,8 @@ PAD_BUTTONS = ["none", "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Star
 # The cockpit's windows: shim.ini section, title, the game's own size.
 WINDOWS = [("mfd1", "MFD 1", 320, 240), ("mfd2", "MFD 2", 320, 240), ("mfd3", "MFD 3", 320, 240),
            ("mfd4", "MFD 4", 320, 240), ("mfd5", "MFD 5", 320, 240), ("radar", "Radar", 640, 480),
-           ("plasma", "Plasma sign", 672, 192), ("mfd_wall", "MFD wall", 1600, 240)]
+           ("plasma", "Plasma sign", 768, 192), ("mfd_wall", "MFD wall", 1600, 240)]
+PLASMA_WIDTHS = ("112", "128")  # the sign's dots across: the game's own, an LED matrix's (shim.ini [plasma] width)
 
 
 # ------------------------------------------------------------ ini files
@@ -352,7 +353,7 @@ def startup_link():
                         "Startup", "BattleTech Centre.lnk")
 
 
-def arrange_windows(mon, layout, rotate):
+def arrange_windows(mon, layout, rotate, sign_w=128):
     """The cockpit's screens on one monitor, as the Displays page's Arrange
     does (app.js arrange()): the five MFDs (or the wall) along the top, the
     radar below, the plasma sign beside it. Borderless."""
@@ -378,7 +379,7 @@ def arrange_windows(mon, layout, rotate):
             rhh = rw * 3 // 4
     out["radar"] = {"x": x, "y": y + ch, "w": rw, "h": rhh, "borderless": "1"}
     pw = min(w - rw, 1344)
-    out["plasma"] = {"x": x + rw, "y": y + ch, "w": pw, "h": pw * 192 // 672, "borderless": "1"}
+    out["plasma"] = {"x": x + rw, "y": y + ch, "w": pw, "h": pw * 32 // sign_w, "borderless": "1"}
     return {k: {kk: str(vv) for kk, vv in v.items()} for k, v in out.items()}
 
 
@@ -720,6 +721,8 @@ class Launcher:
                 "wall_cols": shim.get("mfd_wall", "cols", "5"),
                 "radar_rotate": shim.get("radar", "rotate", "0"),
                 "plasma": shim.get("plasma", "enabled", "1") == "1",
+                "plasma_ranks": shim.get("plasma", "ranks", "1") == "1",
+                "plasma_width": shim.get("plasma", "width", "128"),
                 "windows": wins,
                 "pad_enabled": shim.get("pad", "enabled", "1") == "1",
                 "pad_index": shim.get("pad", "index", "0"),
@@ -781,6 +784,9 @@ class Launcher:
         shim.set("mfd_wall", "cols", str(s["wall_cols"]) if s["mfd_layout"] == "wall" else None)
         shim.set("radar", "rotate", s["radar_rotate"] if s["radar_rotate"] in ("90", "270") else None)
         shim.set("plasma", "enabled", None if s["plasma"] else "0")
+        shim.set("plasma", "ranks", None if s.get("plasma_ranks", True) else "0")
+        pw = str(s.get("plasma_width") or "128")
+        shim.set("plasma", "width", None if pw == "128" or pw not in PLASMA_WIDTHS else pw)
         for sec, win in s["windows"].items():
             for k in ("x", "y", "w", "h"):
                 v = str(win.get(k) or "").strip()
@@ -941,7 +947,8 @@ class Launcher:
                 raise ValueError("which monitor is the main view?")
             s["main_fullscreen"], s["main_monitor"] = True, main
             if cockpit in mons and cockpit != main:
-                s["windows"].update(arrange_windows(mons[cockpit], s["mfd_layout"], s["radar_rotate"]))
+                s["windows"].update(arrange_windows(mons[cockpit], s["mfd_layout"], s["radar_rotate"],
+                                                    int(s.get("plasma_width") or 128)))
                 s["show_surface"] = False
                 if s["mfd_layout"] == "wall":
                     s["wall_cols"] = "5"

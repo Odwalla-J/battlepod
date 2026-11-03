@@ -21,6 +21,7 @@
     <a href="#pc" class="nav on" data-page="pc" data-game="fs">This PC</a>
     <a href="#displays" class="nav" data-page="displays" data-game="fs">Displays</a>
     <a href="#mfds" class="nav" data-page="mfds">MFD boards</a>
+    <a href="#plasma" class="nav" data-page="plasma" data-game="fs">Plasma sign</a>
     <a href="#controls" class="nav" data-page="controls" data-game="fs">Controls</a>
     <a href="#performance" class="nav" data-page="performance" data-game="fs">Performance</a>
     <a href="#bt3" class="nav" data-page="bt3" data-game="bt3">Battle</a>
@@ -257,6 +258,41 @@
       </div>
     </section>
 
+    <!-- Plasma sign: plasma.js -->
+    <section class="page" id="page-plasma">
+      <h1>Plasma sign</h1>
+      <p class="lead">The orange dot-matrix sign on top of the pod, facing the room: the pilot's name, large if it is nine letters or fewer, and their rank above it - from Sergeant up between stars, a veteran seen across the room. Drawn here as the pod draws it: the game's own commands, the same font, the same dots - 128 x 32 for the centre's LED matrices (Settings, below).</p>
+      <div class="card">
+        <div class="card-head"><h3>Every rank</h3>
+          <div class="row" style="margin:0"><label for="pl-name" style="width:auto">Pilot</label><input id="pl-name" maxlength="15" value="Odwalla" style="width:150px"></div></div>
+        <div id="pl-ranks" class="sign-grid"></div>
+        <p class="hint">As the console seats the pilot (LOAD). The rank comes from their career on the console (Leaderboards), written for the pods to <span class="mono">profiles\ranks.ini</span>; a pilot promoted mid-session shows the new rank within a few seconds.</p>
+      </div>
+      <div class="card">
+        <h3>Try it</h3>
+        <div class="row"><label for="pl-pilot">Pilot</label><select id="pl-pilot"></select></div>
+        <div class="row"><label for="pl-tname">Name</label><input id="pl-tname" maxlength="15" value="Odwalla" style="width:170px">
+          <select id="pl-rank"></select></div>
+        <div class="row"><label for="pl-state">The sign</label><select id="pl-state"><option value="seated">Seated, before the match</option><option value="match">In a match: place and score</option></select>
+          <span class="pl-match" hidden>Place <input id="pl-place" type="number" min="1" max="99" value="1" style="width:60px"> Score <input id="pl-score" type="number" value="4250" style="width:100px"></span></div>
+        <div id="pl-try" class="sign-big"></div>
+        <p class="hint" id="pl-line"></p>
+        <details><summary class="hint">The bytes the game sends the sign, for a real display (the control port's <span class="mono">plasma &lt;hex&gt;</span>; the rank line is added to the same stream)</summary><pre id="pl-bytes" class="hint mono pl-bytes"></pre></details>
+      </div>
+      <div class="card">
+        <h3>Names and matches</h3>
+        <div id="pl-long" class="sign-grid"></div>
+        <p class="hint">In a match the game puts the pilot's place and score in two boxes under the name, every second or so - the name goes small then, just above them, to leave the boxes room; after it, the sign goes dark until the next pilot is seated.</p>
+      </div>
+      <div class="card">
+        <h3>Settings</h3>
+        <div class="row"><label for="plasma_width">Width</label><select id="plasma_width"><option value="128">128 x 32 dots - an LED matrix</option><option value="112">112 x 32 dots - the game's own sign</option></select></div>
+        <p class="hint">On a sign wider than the game's 112 dots, the game's picture is moved across to its middle - in the sign's window, and in the bytes the control port passes on to a real display - and the rank line has the room for more stars: one more each rank from Sergeant up, six for a General at 128.</p>
+        <div class="row"><label></label><label class="check"><input type="checkbox" id="plasma_ranks"> The pilot's rank on the sign's top row</label></div>
+        <p class="hint">Off, the sign is as the game draws it: the name, and the match's boxes. The sign's window itself is on the Displays page (<i>Plasma sign</i>), placed with the other cockpit windows. Save, then start the pod again.</p>
+      </div>
+    </section>
+
     <section class="page" id="page-leaderboards">
       <h1>Leaderboards</h1>
       <p class="lead">Every pilot's career, from the match records the pods write - score, kills and deaths as the battle report has them - and from BattleTech 3.0's battles (500 a kill). A pod sends each finished match to the console's launcher; ranks come from experience over a whole career, both games.</p>
@@ -470,5 +506,6 @@
 <script src="app.js"></script>
 <script src="bt3.js"></script>
 <script src="pods.js"></script>
+<script src="plasma.js"></script>
 </body>
 </html>

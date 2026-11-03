@@ -33,10 +33,10 @@ function show(page) {
 window.addEventListener("hashchange", () => show(location.hash.slice(1) || "pc"));
 
 // ------------------------------------------------------------ simple fields
-const TEXT = ["mode", "bitdepth", "main_monitor", "main_x", "main_y", "main_w", "main_h", "mfd_layout", "mfd_tint",
+const TEXT = ["plasma_width", "mode", "bitdepth", "main_monitor", "main_x", "main_y", "main_w", "main_h", "mfd_layout", "mfd_tint",
   "wall_cols", "radar_rotate", "pad_index", "pad_deadzone", "ramp_ms", "capture_mouse", "vsync", "max_fps",
   "print_to_file", "print_folder", "console_addr", "joy_deadzone"];
-const CHECK = ["keep_aspect", "show_surface", "plasma", "pad_enabled", "pad_invert_y", "gpu_present", "frame_stats",
+const CHECK = ["keep_aspect", "show_surface", "plasma", "plasma_ranks", "pad_enabled", "pad_invert_y", "gpu_present", "frame_stats",
   "start_printer", "joy_enabled"];
 
 function fillFields() {
@@ -186,7 +186,7 @@ function arrange() {
   if (V.radar_rotate === "90" || V.radar_rotate === "270") { rhh = rh; rw = Math.floor(rh * 3 / 4); }
   else { rhh = rh; rw = Math.floor(rh * 4 / 3); if (rw > m.w / 2) { rw = Math.floor(m.w / 2); rhh = Math.floor(rw * 3 / 4); } }
   W.radar = { x: m.x, y: m.y + ch, w: rw, h: rhh, borderless: nb };
-  const pw = Math.min(m.w - rw, 1344), ph = Math.floor(pw * 192 / 672);
+  const pw = Math.min(m.w - rw, 1344), ph = Math.floor(pw * 32 / (+V.plasma_width || 128));
   W.plasma = { x: m.x + rw, y: m.y + ch, w: pw, h: ph, borderless: nb };
   V.show_surface = false; $("#show_surface").checked = false;
   renderWindows(); touch();

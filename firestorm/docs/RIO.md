@@ -140,7 +140,8 @@ Text is sent as plain bytes. Commands start with `ESC` (`1B`):
 
 The game (`0x56A060`) has three states: blank; the pilot's name, centred on
 (56, 15) - large if it is nine characters or fewer, else small - so the sign
-is 112 dots across and 32 high; and rank and score, in boxes at
+is 112 dots across and 32 high (a wider one, `[plasma] width`, gets every x
+moved across to its middle, and so do the bytes the control port passes on); and rank and score, in boxes at
 (27-42, 19-30) and (42-93, 19-30), 5x7.
 
 The shim answers the port and draws the sign in a window; the bytes also go

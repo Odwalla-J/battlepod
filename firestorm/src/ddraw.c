@@ -4291,23 +4291,35 @@ static DWORD WINAPI rio_main(LPVOID p)
  *   1B 58 x0 y0 x1 y1      a box
  *   1B 78 0 x0 y0 x1 y1    clear a rectangle
  *
- * The game centres a name on (56, 15), so the sign is 112 dots wide; its
+ * The game centres a name on (56, 15), so its sign was 112 dots wide; its
  * boxes reach row 30, so 32 high. [plasma] port picks the COM number
- * (default 2); enabled = 0 leaves the port alone.
+ * (default 2); enabled = 0 leaves the port alone. [plasma] width is this
+ * sign's (112 to 160, default 128: an LED matrix's); the game's picture is
+ * moved across to its middle, in what is drawn and in what goes to the
+ * control port - every x the game sends, plus (width - 112) / 2 - so a real
+ * display of that width takes the bytes as they come.
  *
  * The pilot's rank. The launcher keeps each pilot's career and writes their
  * ranks to profiles\ranks.ini ("Name=4,SERGEANT,SGT"). Whenever the game
  * has written a name on the sign (text above row 16) and that pilot has a
  * rank, the rank goes on the top row, rows 0-6, which the game never uses:
  * "SERGEANT", with stars either side from Sergeant up - a veteran, seen
- * across the room. It is written as the game would write it, into the same
+ * across the room - one more each rank above, as many as the width takes. It is written as the game would write it, into the same
  * stream, so a real sign fed from the control port shows it too; the
- * game's font and place are put back after ([plasma] ranks = 0: never). */
-#define PL_W 112
+ * game's font and place are put back after ([plasma] ranks = 0: never).
+ *
+ * In a match the game puts its place and score boxes on rows 19-30, under
+ * a name it drew large on rows 8-21 - over the name's last rows - or small
+ * on rows 12-18, touching them. So when the boxes come, the name is written
+ * again small (5x7) on rows 10-16, the same way into the same stream;
+ * seated, it stays as the game drew it. */
+#define PL_GAME_W 112		/* the game's sign */
+#define PL_MAX_W 160
 #define PL_H 32
 static HANDLE g_plasma_h;
 static HWND g_plasma_win;
-static uint8_t g_pl[PL_H][PL_W];
+static uint8_t g_pl[PL_H][PL_MAX_W];
+static int g_pl_w = PL_GAME_W, g_pl_dx;	/* this sign's width; the game's picture moved across by */
 static volatile LONG g_pl_dirty;
 static CRITICAL_SECTION g_pl_lock;
 
@@ -4341,7 +4353,7 @@ static const uint8_t g_font5x7[95][5] = {
 
 static void pl_dot(int x, int y, int on)
 {
-	if (x >= 0 && x < PL_W && y >= 0 && y < PL_H) g_pl[y][x] = (uint8_t)on;
+	if (x >= 0 && x < g_pl_w && y >= 0 && y < PL_H) g_pl[y][x] = (uint8_t)on;
 }
 
 static void pl_rect(int x0, int y0, int x1, int y1, int fill, int on);
@@ -4381,6 +4393,7 @@ static void pl_rect(int x0, int y0, int x1, int y1, int fill, int on)
 static char g_pl_name[32];		/* the name on the sign, as the game wrote it */
 static char g_pl_shown[40];		/* the rank line on it now */
 static int g_pl_ranks = -1, g_pl_cx, g_pl_cy, g_pl_font, g_pl_inside;
+static int g_pl_big, g_pl_shrink;	/* a name is on the sign; the match's boxes are coming under it */
 static CRITICAL_SECTION g_pl_feed;		/* one writer at a time: the game, or the rank */
 
 static void plasma_feed(const uint8_t *b, DWORD n);
@@ -4389,8 +4402,8 @@ static void plasma_feed(const uint8_t *b, DWORD n);
  * if `force` (the game may have drawn over it), else only if it changed. */
 static void plasma_rank(int force)
 {
-	char ini[MAX_PATH], v[64], line[40] = "", *title, *e;
-	uint8_t out[80];
+	char ini[MAX_PATH], v[64], line[48] = "", *title, *e;
+	uint8_t out[96];
 	int rank, stars, k = 0, len, i;
 
 	if (g_pl_ranks < 0) g_pl_ranks = cfg_int("plasma", "ranks", 1);
@@ -4402,24 +4415,51 @@ static void plasma_rank(int force)
 		if (rank >= 1 && *e == ',') {
 			title = e + 1;
 			if ((e = strchr(title, ','))) *e = 0;
-			stars = rank >= 4 ? (rank - 3 > 3 ? 3 : rank - 3) : 0;
-			snprintf(line, sizeof line, "%.*s%s%.12s%s%.*s", stars, "***", stars ? " " : "", title,
-				 stars ? " " : "", stars, "***");
+			if (strlen(title) > 12) title[12] = 0;
+			stars = rank >= 4 ? (rank - 3 > 8 ? 8 : rank - 3) : 0;
+			while (stars && ((int)strlen(title) + 2 + 2 * stars) * 6 > g_pl_w) stars--;
+			snprintf(line, sizeof line, "%.*s%s%s%s%.*s", stars, "********", stars ? " " : "", title,
+				 stars ? " " : "", stars, "********");
 		}
 	}
 	if (!strcmp(line, g_pl_shown) && (!force || !line[0])) return;
 	len = (int)strlen(line);
-	out[k++] = 0x1B; out[k++] = 0x78; out[k++] = 0; out[k++] = 0; out[k++] = 0; out[k++] = PL_W - 1; out[k++] = 6;
+	out[k++] = 0x1B; out[k++] = 0x78; out[k++] = 0; out[k++] = 0; out[k++] = 0; out[k++] = (uint8_t)(g_pl_w - 1); out[k++] = 6;
 	if (len) {
 		out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = 0;
 		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = 0;
-		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)((PL_W - len * 6) / 2 > 0 ? (PL_W - len * 6) / 2 : 0);
+		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)((g_pl_w - len * 6) / 2 > 0 ? (g_pl_w - len * 6) / 2 : 0);
 		for (i = 0; i < len; i++) out[k++] = (uint8_t)line[i];
 		out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = (uint8_t)g_pl_font;	/* the game's own, as it left them */
 		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = (uint8_t)g_pl_cy;
 		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)g_pl_cx;
 	}
 	strcpy(g_pl_shown, line);
+	g_pl_inside = 1;
+	plasma_feed(out, k);
+	g_pl_inside = 0;
+}
+
+/* The name again, small, between the rank line and the match's boxes: the
+ * game's, rows 8-21, is rubbed out across the sign (the boxes are drawn
+ * after), then the game's font and place are put back. */
+static void plasma_shrink(void)
+{
+	uint8_t out[64];
+	int k = 0, len = (int)strlen(g_pl_name), i;
+
+	g_pl_big = 0;
+	if (len > 20) len = 20;
+	out[k++] = 0x1B; out[k++] = 0x78; out[k++] = 0; out[k++] = 0; out[k++] = 7; out[k++] = (uint8_t)(g_pl_w - 1); out[k++] = 21;
+	if (len) {
+		out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = 2;
+		out[k++] = 0x1B; out[k++] = 0x51; out[k++] = 10;
+		out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)((g_pl_w - len * 6) / 2 > 0 ? (g_pl_w - len * 6) / 2 : 0);
+		for (i = 0; i < len; i++) out[k++] = (uint8_t)g_pl_name[i];
+	}
+	out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = (uint8_t)g_pl_font;
+	out[k++] = 0x1B; out[k++] = 0x51; out[k++] = (uint8_t)g_pl_cy;
+	out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)g_pl_cx;
 	g_pl_inside = 1;
 	plasma_feed(out, k);
 	g_pl_inside = 0;
@@ -4437,21 +4477,26 @@ static void plasma_poll(void)
 	LeaveCriticalSection(&g_pl_feed);
 }
 
-/* The bytes the game writes, a command at a time. */
+/* The bytes the game writes, a command at a time. The game's x's are moved
+ * across to the middle of a wider sign (g_pl_dx) - the rank line's are this
+ * sign's already - and the control port is told the bytes as moved. */
 static void plasma_feed(const uint8_t *b, DWORD n)
 {
 	static uint8_t cmd[8];
 	static int have, need, in_text;
 	char hex[3 * 64 + 1];
 	DWORD i;
-	int k = 0;
+	int k = 0, told = 0;
 
 	EnterCriticalSection(&g_pl_feed);
-	for (i = 0; i < n && k < (int)sizeof hex - 4; i++) k += sprintf(hex + k, " %02X", b[i]);
-	rio_tell("plasma%s%s", hex, i < n ? " ..." : "");
 	EnterCriticalSection(&g_pl_lock);
 	for (i = 0; i < n; i++) {
 		uint8_t c = b[i];
+		if (have && !g_pl_inside &&
+		    ((have == 2 && cmd[1] == 0x52) || (cmd[1] == 0x58 && (have == 2 || have == 4)) ||
+		     (cmd[1] == 0x78 && (have == 3 || have == 5))))
+			c = (uint8_t)(c + g_pl_dx);
+		if (k < (int)sizeof hex - 4) { k += sprintf(hex + k, " %02X", c); told++; }
 		if (have) {
 			in_text = 0;
 			cmd[have++] = c;
@@ -4469,13 +4514,16 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 				memset(g_pl, 0, sizeof g_pl);
 				g_pl_cx = g_pl_cy = 0;
 				g_pl_shown[0] = 0;
-				if (!g_pl_inside) g_pl_name[0] = 0;
+				if (!g_pl_inside) g_pl_name[0] = 0, g_pl_big = 0;
 				break;
 			case 0x52: g_pl_cx = cmd[2]; break;
 			case 0x51: g_pl_cy = cmd[2]; break;
 			case 0x4B: g_pl_font = cmd[2]; break;
 			case 0x58: pl_rect(cmd[2], cmd[3], cmd[4], cmd[5], 0, 1); break;
-			case 0x78: pl_rect(cmd[3], cmd[4], cmd[5], cmd[6], 1, cmd[2] != 0); break;
+			case 0x78:
+				pl_rect(cmd[3], cmd[4], cmd[5], cmd[6], 1, cmd[2] != 0);
+				if (!g_pl_inside && g_pl_big && cmd[4] >= 16) g_pl_shrink = 1;	/* the match's boxes */
+				break;
 			}
 			have = 0;
 		} else if (c == 0x1B) {
@@ -4485,18 +4533,24 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 			if (!g_pl_inside && g_pl_cy < 16) {	/* the name, a run of text at a time */
 				size_t l = in_text ? strlen(g_pl_name) : 0;
 				if (l + 1 < sizeof g_pl_name) { g_pl_name[l] = (char)c; g_pl_name[l + 1] = 0; }
+				g_pl_big = 1;
 			}
 			in_text = 1;
 			g_pl_cx += pl_char(g_pl_cx, g_pl_cy, c, g_pl_font == 4 || g_pl_font == 5);
 		}
 	}
 	LeaveCriticalSection(&g_pl_lock);
+	rio_tell("plasma%s%s", hex, told < (int)n ? " ..." : "");
 	InterlockedExchange(&g_pl_dirty, 1);
 	if (!g_pl_inside) {
 		char *s = g_pl_name, *e = s + strlen(s);
 		while (*s == ' ') s++;			/* the game pads to rub out what was there */
 		while (e > s && e[-1] == ' ') *--e = 0;
 		if (s != g_pl_name) memmove(g_pl_name, s, strlen(s) + 1);
+		if (g_pl_shrink) {
+			g_pl_shrink = 0;
+			if (g_pl_name[0]) plasma_shrink();
+		}
 		plasma_rank(1);
 	}
 	LeaveCriticalSection(&g_pl_feed);
@@ -4506,7 +4560,7 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 static void plasma_draw(void)
 {
 	enum { S = 6 };
-	static uint32_t px[PL_H * S][PL_W * S];
+	static uint32_t px[PL_H * S][PL_MAX_W * S];
 	static DWORD last;
 	int x, y, i, j;
 
@@ -4517,7 +4571,7 @@ static void plasma_draw(void)
 	last = GetTickCount();
 	EnterCriticalSection(&g_pl_lock);
 	for (y = 0; y < PL_H; y++)
-		for (x = 0; x < PL_W; x++) {
+		for (x = 0; x < g_pl_w; x++) {
 			uint32_t on = g_pl[y][x] ? 0xFF7A1A : 0x2A0E04;
 			for (j = 0; j < S; j++)
 				for (i = 0; i < S; i++) {
@@ -4526,7 +4580,7 @@ static void plasma_draw(void)
 				}
 		}
 	LeaveCriticalSection(&g_pl_lock);
-	draw_rgb(g_plasma_win, &px[0][0], PL_W * S, PL_H * S, 0, 0, PL_W * S, PL_H * S);
+	draw_rgb(g_plasma_win, &px[0][0], PL_MAX_W * S, PL_H * S, 0, 0, g_pl_w * S, PL_H * S);
 }
 
 static HANDLE plasma_open(const char *name)
@@ -4534,9 +4588,13 @@ static HANDLE plasma_open(const char *name)
 	if (!g_plasma_h) {
 		InitializeCriticalSection(&g_pl_lock);
 		InitializeCriticalSection(&g_pl_feed);
+		g_pl_w = cfg_int("plasma", "width", 128);
+		if (g_pl_w < PL_GAME_W) g_pl_w = PL_GAME_W;
+		if (g_pl_w > PL_MAX_W) g_pl_w = PL_MAX_W;
+		g_pl_dx = (g_pl_w - PL_GAME_W) / 2;
 		g_plasma_h = CreateEventA(NULL, TRUE, FALSE, NULL);
 		if (cfg_int("shim", "cockpit_windows", g_cockpit))
-			g_plasma_win = make_window("Plasma sign", "plasma", 1500, 0, PL_W * 6, PL_H * 6);
+			g_plasma_win = make_window("Plasma sign", "plasma", 1500, 0, g_pl_w * 6, PL_H * 6);
 		InterlockedExchange(&g_pl_dirty, 1);
 	}
 	say("plasma: the game opened %s; the virtual sign answers", name);

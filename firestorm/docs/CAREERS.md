@@ -81,8 +81,20 @@ On a pod, both pages are the console's, through its launcher.
 
 When the game writes a pilot's name on the sign and that pilot has a rank,
 the shim writes the rank on the sign's top row (rows 0-6, which the game
-never uses): `MECHWARRIOR`, and from Sergeant up between stars, one to three
-by rank - `** CAPTAIN **` - a veteran, seen across the room. It goes into the
+never uses): `MECHWARRIOR`, and from Sergeant up between stars - one for a
+Sergeant and one more each rank above, as many as the sign's width takes
+(`[plasma] width`): on the centre's 128-dot LED matrices `* SERGEANT *` up
+to `****** GENERAL ******`; on the game's own 112 dots, four at most - a
+veteran, seen across the room. It goes into the
 same byte stream as the game's own text (font, place, text, then the game's
 font and place put back), so a real sign fed from the control port shows it
-too. `[plasma] ranks = 0` leaves the sign as the game draws it.
+too. In a match, when the game puts its place and score boxes under the name
+(rows 19-30, over the last rows of a large name), the shim writes the name
+again small on rows 10-16, between the rank and the boxes; seated, it stays
+as the game drew it. `[plasma] ranks = 0` leaves the sign as the game draws it (the
+launcher's **Plasma sign** page has the switch).
+
+The launcher's Plasma sign page shows the sign for every rank, and for any
+name, rank, place and score: the bytes the game sends (`0x569DE0`-
+`0x56A3ED`) put through the same interpreter, font and rank line as the
+shim's, so it is what a pod shows, dot for dot.

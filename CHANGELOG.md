@@ -29,6 +29,15 @@ All notable changes to this project are documented here. The format follows
   comes back in front, and the pods leave Firestorm for Ready - a pod's MW4
   takes one console a run, and a console started again found them in
   "Tesla error" before; now each console starts them afresh.
+- The launcher's **Plasma sign** page: the pod's sign for every rank, and
+  for any pilot, rank, place and score, drawn as the pod draws it; and the
+  switch for the rank on its top row (`[plasma] ranks`).
+- **A 128-dot sign** (`[plasma] width`, 128 by default, for the centre's
+  LED matrices): the game's 112-dot picture is moved to its middle, in the
+  sign's window and in the bytes the control port passes on, and the rank
+  line takes more stars - one for a Sergeant, one more each rank up, six for
+  a General. In a match the name goes small, just above the place and
+  score boxes, which drew over a large name's last rows.
 - `fsrun` hides the console window Windows gives it when VWE's Launcher.exe
   starts a pod's game, and shows it only to report a failure.
 
