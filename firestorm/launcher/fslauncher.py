@@ -467,7 +467,9 @@ class Launcher:
         self.careers = career.Careers(game)
         self.bt3 = bt3.BT3(os.path.dirname(os.path.dirname(game)))
         self.mfd_boards = []
+        self.mfd_new = []               # CH340 ports with no MFD firmware answering: boards to flash
         self.mfd_tester = None
+        self.mfd_flasher = None
         self.url = None                 # this launcher's page
         self.agent = None               # podagent.PodAgent: a pod run from the console
         self.pods = None                # podagent.PodDirectory: the console's pods
@@ -752,6 +754,7 @@ class Launcher:
 
     # ---- writing
     def save(self, s):
+        tint = self.mfd_tint()
         shim, opts, ctcl, me = self.ini("shim.ini"), self.ini("options.ini"), self.ini("ctcl.ini"), self.ini("launcher.ini")
         if not shim.lines:
             shim.lines = ["; firestorm-shim settings for this machine, kept by the launcher (launcher/fslauncher.py).",
@@ -827,6 +830,10 @@ class Launcher:
         for f in (shim, opts, ctcl, me):
             f.save()
         self.message = "Saved."
+        if self.mfd_tint() != tint:             # the boards show the MFD colour too
+            failed = self.tint_boards()
+            if failed:
+                self.message += " %s did not take the MFD colour: flash the newer firmware on it (MFD boards)." % ", ".join(failed)
         return True
 
     # ---- running
@@ -1287,12 +1294,49 @@ class Launcher:
     # ---- MFD boards (mfdtest.py): find them, tell each which MFD it is, test pictures
     def mfd_mod(self):
         import mfdtest
+        import mfdflash
         if self.mfd_tester is None:
             self.mfd_tester = mfdtest.Tester()
+            self.mfd_flasher = mfdflash.Flasher()
         return mfdtest
+
+    def mfd_tint(self):
+        return (self.ini("shim.ini").get("mfd", "tint", "FFFFFF") or "FFFFFF").upper()
+
+    def tint_boards(self, ports=None):
+        """Give the MFD boards the MFD colour (the windows' [mfd] tint): they
+        keep it, and show the game's grey picture through it. The bridge and
+        the test pictures hold the ports, so they step aside meanwhile.
+        Returns the ports that could not take it (older firmware, gone)."""
+        mt = self.mfd_mod()
+        if mt.serial is None or self.mfd_flasher.running:
+            return []
+        ports = ports if ports is not None else ([b["port"] for b in self.mfd_boards] or self.bridge_ports())
+        if not ports:
+            return []
+        bridge, testing = self.bridge_running(), self.mfd_tester.running
+        self.bridge_stop()
+        self.mfd_tester.stop()
+        rgb, failed = self.mfd_tint(), []
+        for port in ports:
+            try:
+                d = mt.set_tint(port, rgb)
+                if d["tint"] is None:
+                    failed.append(port)
+                for b in self.mfd_boards:
+                    if b["port"] == port:
+                        b.update(d)
+            except (ValueError, OSError):
+                failed.append(port)
+        if testing:
+            self.mfd_tester.start(self.mfd_boards, self.game)
+        if bridge:
+            self.bridge_start()
+        return failed
 
     def mfd_state(self):
         mt = self.mfd_mod()
+        import mfdflash
         shim = self.ini("shim.ini")
         me = self.ini("launcher.ini")
         return {"available": mt.serial is not None, "boards": self.mfd_boards,
@@ -1300,22 +1344,56 @@ class Launcher:
                 "recorded": mt.recorded(self.game), "stream": shim.get("stream", "enable", "0") == "1",
                 "bridge": self.bridge_running(), "bridge_auto": me.get("mfd", "bridge", "1") == "1",
                 "bridge_ports": self.bridge_ports(), "bridge_found": self.bridge_files() is not None,
-                "bridge_log": self.bridge_log_tail()}
+                "bridge_log": self.bridge_log_tail(), "new": self.mfd_new,
+                "flashing": self.mfd_flasher.running, "flash": self.mfd_flasher.state(),
+                "firmware": mfdflash.firmware_version(), "firmware_found": mfdflash.firmware_dir() is not None,
+                "tint": self.mfd_tint()}
 
     def mfd_scan(self):
         mt = self.mfd_mod()
         self.mfd_tester.stop()
         if mt.serial is None:
             raise ValueError("this launcher has no pyserial, which MFD boards need")
+        self.mfd_not_flashing()
         self.bridge_stop()                      # it holds the boards' ports
         self.mfd_boards = mt.scan()
+        import mfdflash
+        self.mfd_new = mfdflash.candidates([b["port"] for b in self.mfd_boards])
+        self.mfd_flasher.clear()
         self.remember_boards()
-        self.message = "Found %d MFD board%s." % (len(self.mfd_boards), "" if len(self.mfd_boards) == 1 else "s")
+        self.tint_boards([b["port"] for b in self.mfd_boards if b.get("tint") not in (None, self.mfd_tint())])
+        self.message = "Found %d MFD board%s%s." % (
+            len(self.mfd_boards), "" if len(self.mfd_boards) == 1 else "s",
+            ", and %d without its firmware" % len(self.mfd_new) if self.mfd_new else "")
+        return self.mfd_state()
+
+    def mfd_not_flashing(self):
+        if self.mfd_flasher.running:
+            raise ValueError("boards are being flashed: wait for them to finish")
+
+    def mfd_flash(self, body):
+        """Put the MFD firmware on the boards on these ports, in the background:
+        the page follows it in mfd_state()["flash"] and finds the boards again after."""
+        import mfdflash
+        self.mfd_mod()
+        ports = [p for p in body.get("ports") or [] if p]
+        if not ports:
+            raise ValueError("no boards to flash")
+        if mfdflash.firmware_dir() is None:
+            raise ValueError("the MFD firmware images are not with this launcher")
+        known = {b["port"] for b in self.mfd_boards} | {d["port"] for d in self.mfd_new}
+        if any(p not in known for p in ports):
+            raise ValueError("Find boards first: %s is not a board found here" % ", ".join(p for p in ports if p not in known))
+        self.mfd_tester.stop()
+        self.bridge_stop()
+        self.mfd_flasher.start(ports)
+        self.message = "Flashing %s with %s..." % (", ".join(ports), mfdflash.firmware_version())
         return self.mfd_state()
 
     def mfd_assign(self, body):
         """A board is MFD n now; one that was MFD n before is no MFD."""
         mt = self.mfd_mod()
+        self.mfd_not_flashing()
         port, n = body["port"], int(body.get("mfd") or 0)
         testing = self.mfd_tester.running
         self.mfd_tester.stop()
@@ -1335,6 +1413,7 @@ class Launcher:
 
     def mfd_test(self, body):
         self.mfd_mod()
+        self.mfd_not_flashing()
         if body.get("on"):
             if not self.mfd_boards:
                 raise ValueError("no MFD boards found yet: Find boards first")
@@ -1348,6 +1427,7 @@ class Launcher:
 
     def mfd_record(self, body):
         mt = self.mfd_mod()
+        self.mfd_not_flashing()
         port = int(self.ini("shim.ini").get("stream", "port", "9110") or 9110)
         again = self.bridge_running()           # the stream takes one client: the bridge steps aside
         self.bridge_stop()
@@ -1427,6 +1507,11 @@ class Launcher:
         self.bridge_stop()
         if self.mfd_tester is not None:
             self.mfd_tester.stop()              # the test pictures hold the same ports
+        for port in self.bridge_ports():        # the MFD colour, which a console may have changed
+            try:
+                mfdtest.set_tint(port, self.mfd_tint())
+            except (ValueError, OSError) as e:
+                self.bridge_note += " The MFD colour did not reach %s: %s." % (port, e)
         script, profile, layout = files
         shim = self.ini("shim.ini")
         if game == "firestorm" and shim.get("stream", "enable", "0") != "1":
@@ -1823,7 +1908,7 @@ def make_handler(app):
                     fn = {"/api/mfd/scan": lambda b: app.mfd_scan(), "/api/mfd/assign": app.mfd_assign,
                           "/api/mfd/test": app.mfd_test, "/api/mfd/record": app.mfd_record,
                           "/api/mfd/forget": lambda b: app.mfd_forget(), "/api/mfd/stream": app.mfd_stream,
-                          "/api/mfd/bridge": app.mfd_bridge}.get(self.path)
+                          "/api/mfd/bridge": app.mfd_bridge, "/api/mfd/flash": app.mfd_flash}.get(self.path)
                     if not fn:
                         return self.send(404, {"error": "not found"})
                     out = fn(body)

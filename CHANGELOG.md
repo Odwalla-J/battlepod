@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Flashing MFD boards from the launcher**: the MFD boards page lists a
+  board still on Elecrow's demo as *New board*, and *Flash* puts the MFD
+  firmware on it in about 25 s, several boards at once, with no Arduino
+  tools - `launcher/mfdflash.py` speaks the ESP32-S3's ROM bootloader
+  protocol over pyserial, writes the images kept in
+  `firmware/esp32-mfd/bin`, checks them by MD5 and resets the board. Boards
+  on an older firmware show *Update*; flashing again keeps a board's MFD.
+- **The MFD colour on the MFD boards** (firmware 0.5): the launcher's *MFD
+  colour* tinted only the MFD windows - the boards were built white. A board
+  now keeps a colour in its flash (`TINT`, 0x18, in `MODULE_PROTOCOL.md`;
+  reported in its `HELLO`), showing it from the next frame, and the launcher sends
+  it the setting when it is saved, when boards are found and before the
+  bridge starts. The MFD boards page shows each board's colour.
 - **A centre, run from the console** (`firestorm/README.md`, *A centre: one
   console, its pods*). A first-time setup (pod or console, the pod's number
   and name, which monitor is which, its controls, Windows Firewall, start
@@ -176,6 +189,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **MFD boards' pictures slipping** (firmware 0.6): a page change - a whole
+  frame decoded and copied - could leave part of a board's picture's bottom
+  at its top. The panel's refill from PSRAM came too late: measured, about
+  1.6 slips for every whole frame. The board now keeps the picture grey, a
+  byte a pixel, and fills the panel's bounce buffers itself, colouring as it
+  scans - half the PSRAM traffic - with 30-line bands; a stream of whole
+  frames slips none, and the board reports any slip (`panel: N slips`) in
+  the bridge's log.
 - **The launcher stopped under an open window.** It ended itself when the
   page had not pinged for 10 s, and Edge slows a page that is not in front -
   to a timer a minute once it has been hidden a while - so after time in the

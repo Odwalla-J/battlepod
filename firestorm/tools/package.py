@@ -3,7 +3,8 @@
 
     DEST\\Firestorm.exe   starts the launcher (src/firestorm.c), with the game's vwe.ico
     DEST\\python\\         an embeddable Python from python.org, nothing installed
-    DEST\\launcher\\       fslauncher.py and its page, and the MFD bridge
+    DEST\\launcher\\       fslauncher.py and its page, the MFD bridge, and the
+                         MFD firmware its MFD boards page flashes boards with
     DEST\\tools\\          start-centre.ps1 and desk.py, for the launcher's test match
     DEST\\game\\           a copy of --game with this build's ddraw.dll and fsrun.exe
     DEST\\BattleTech 3.0.exe the same starter, opening the launcher on BattleTech 3.0
@@ -185,6 +186,8 @@ def main():
         copy(os.path.join(ROOT, "..", "profiles", f), os.path.join(launcher, f))
     for f in ("firestorm-mfds", "milestone-mfd"):
         copy(os.path.join(ROOT, "..", "layouts", f), os.path.join(launcher, f))
+    # The MFD firmware's images, for the page's Flash button (launcher/mfdflash.py).
+    shutil.copytree(os.path.join(ROOT, "firmware", "esp32-mfd", "bin"), os.path.join(launcher, "esp32-mfd"))
     try:
         import serial
         shutil.copytree(os.path.dirname(serial.__file__), os.path.join(launcher, "serial"),

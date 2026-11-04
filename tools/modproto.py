@@ -23,6 +23,8 @@ BAR = 0x13
 CLEAR = 0x14
 PING = 0x15
 FRAME = 0x16        # part of a picture: docs/MFD_STREAMING_PROTOCOL.md (tools/mfdstream.py)
+NAME = 0x17         # the name to keep: which MFD a board is
+TINT = 0x18         # the colour to keep: R, G, B (the grey picture is shown through it)
 # module -> host
 HELLO = 0x02
 KEY = 0x20
@@ -148,8 +150,10 @@ def parse_hello(p):
     # A framebuffer module adds its capabilities and the largest FRAME body
     # it takes (docs/MFD_STREAMING_PROTOCOL.md); older modules end here.
     caps, max_body = struct.unpack(">BH", p[at + 8:at + 11]) if len(p) >= at + 11 else (0, 0)
+    # One that keeps a colour (TINT) adds it: R, G, B.
+    tint = bytes(p[at + 11:at + 14]).hex().upper() if len(p) >= at + 14 else None
     return dict(version=ver, cls=cls, uid=uid, firmware=fw, keys=keys, leds=leds,
-                levels=levels, width=w, height=h, kind=kind, caps=caps, max_body=max_body)
+                levels=levels, width=w, height=h, kind=kind, caps=caps, max_body=max_body, tint=tint)
 
 
 def led(channel, level):

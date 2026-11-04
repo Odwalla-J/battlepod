@@ -169,6 +169,15 @@ the next frame, the update copied across - 0 skipped, 0 `SYNC` in 150 s, ack
 whole frame decoded (a page change) or a flash write (naming the board) could
 starve it and roll the picture for a frame.
 
+Five boards on a live game (2026-11-03) still slipped at page changes. With a
+counter in the firmware, a stream of whole frames slipped about 1.6 times a
+frame with 20-line bands; pacing the copy cut that to 0.5, 40-line bands and
+the driver's `bb_invalidate_cache` did nothing. Firmware 0.6 keeps the
+picture as 8-bit grey (two 300 KB framebuffers) and fills the bounce buffers
+itself through the colour table (`no_fb`, `on_bounce_empty`): half the PSRAM
+traffic, 0 slips, the worst refill 0.9 ms late of the 1.8 ms a 30-line band
+allows, and 10 whole frames a second instead of 8.
+
 What it took: the panel's interrupt on core 0 and the UART's on core 1 with
 the decoder, the UART interrupting when its FIFO is half full; and on the
 bridge, cumulative acknowledgements (before them a single lost `FRAME_ACK`

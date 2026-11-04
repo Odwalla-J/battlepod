@@ -37,7 +37,7 @@ The CRC's check value is `CRC("123456789") = 0x29B1`.
 | type | name | from | payload |
 |---|---|---|---|
 | `0x01` | `HELLO?` | host | protocol version (u8) |
-| `0x02` | `HELLO` | module | version (u8), class (str), unique id (str), firmware (str), keys (u8), LED channels (u8), PWM bits per LED (u8), screen width (u16), height (u16), screen kind (u8: 0 none, 1 monochrome, 2 colour, 3 8-bit grey framebuffer); a framebuffer module adds capabilities (u8) and its largest FRAME body (u16) - [MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md) |
+| `0x02` | `HELLO` | module | version (u8), class (str), unique id (str), firmware (str), keys (u8), LED channels (u8), PWM bits per LED (u8), screen width (u16), height (u16), screen kind (u8: 0 none, 1 monochrome, 2 colour, 3 8-bit grey framebuffer); a framebuffer module adds capabilities (u8) and its largest FRAME body (u16), and one that keeps a colour adds it (R, G, B) - [MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md) |
 | `0x10` | `LED` | host | channel (u8), level (u8, 0-255) |
 | `0x11` | `LEDS` | host | first channel (u8), levels (u8 each) |
 | `0x12` | `TEXT` | host | field (u8), x (u16), y (u16), size (u8), attribute (u8), the text (UTF-8, the rest of the payload) |
@@ -46,6 +46,7 @@ The CRC's check value is `CRC("123456789") = 0x29B1`.
 | `0x15` | `PING` | host | - |
 | `0x16` | `FRAME` | host | part of a picture: changed rectangles of a display, for games whose displays are pictures - [MFD_STREAMING_PROTOCOL.md](MFD_STREAMING_PROTOCOL.md) |
 | `0x17` | `NAME` | host | the unique id to keep from now on (UTF-8, the rest of the payload, at most 32 bytes): a module that can keep one stores it and answers with a new `HELLO`; one that cannot ignores it |
+| `0x18` | `TINT` | host | the colour to keep from now on, R G B (3 bytes): a grey-framebuffer module shows its picture through it, stores it and answers with a new `HELLO`; the picture on it takes the colour from its next frame (esp32-mfd 0.6 colours as it scans; 0.5 asked for a whole frame, `SYNC`, to draw again); one that cannot ignores it |
 | `0x20` | `KEY` | module | index (u8, from 1), down (u8: 1 down, 0 up), module time in ms (u32) |
 | `0x21` | `PONG` | module | module time in ms (u32) |
 | `0x22` | `ERROR` | module | code (u8), text (the rest) |

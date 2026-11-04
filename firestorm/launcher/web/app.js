@@ -405,7 +405,8 @@ async function load() {
 async function save() {
   const r = await api("/api/save", V);
   dirty = !r.ok;
-  status(r.ok ? "Saved to shim.ini, options.ini and ctcl.ini (the old ones are kept as .bak)." : "Error: " + r.error, !r.ok);
+  const more = r.ok && r.message && r.message !== "Saved." ? " " + r.message.replace(/^Saved\. */, "") : "";
+  status(r.ok ? "Saved to shim.ini, options.ini and ctcl.ini (the old ones are kept as .bak)." + more : "Error: " + r.error, !r.ok);
 }
 
 $("#save").addEventListener("click", save);
@@ -440,14 +441,36 @@ function renderMfd() {
   const busy = $("#page-mfds").classList.contains("busy");
   const counts = {};
   M.boards.forEach(b => { if (b.mfd) counts[b.mfd] = (counts[b.mfd] || 0) + 1; });
-  $("#mfdtable tbody").innerHTML = M.boards.length ? M.boards.map(b => `<tr>
-      <td>${b.port}</td><td class="mono">${b.uid}</td><td class="hint">${b.firmware}</td>
-      <td><select data-mfdport="${b.port}" ${busy ? "disabled" : ""}>
+  const off = busy || M.flashing ? "disabled" : "";
+  const fw = (port, text) => {            // the firmware cell: what it runs, or how its flashing goes
+    const j = M.flash[port];
+    if (!j) return text;
+    if (j.error) return `<span class="bad">Flashing failed: ${j.error}</span>`;
+    return j.done ? "Flashed: " + text : `${j.text}... ${Math.round(j.fraction * 100)}%`;
+  };
+  const outdated = b => M.firmware && b.firmware !== M.firmware;
+  const flashBtn = (port, label) => M.firmware_found
+    ? `<button class="btn ghost" data-mfdflash="${port}" ${off}>${label}</button>` : "";
+  const rows = M.boards.map(b => `<tr>
+      <td>${b.port}</td><td class="mono">${b.tint ? `<span class="swatch" style="background:#${b.tint}" title="Its colour: #${b.tint}"></span>` : ""}${b.uid}</td>
+      <td class="hint">${fw(b.port, b.firmware + (outdated(b) ? ` (this launcher has ${M.firmware})` : ""))}</td>
+      <td><select data-mfdport="${b.port}" ${off}>
         <option value="0">-</option>${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${b.mfd === n ? "selected" : ""}>MFD ${n}</option>`).join("")}
-      </select></td></tr>`).join("")
-    : `<tr><td colspan="4" class="hint">${M.available ? "No boards found yet: Find boards." : "This launcher has no pyserial: MFD boards cannot be reached from it."}</td></tr>`;
+      </select></td>
+      <td>${flashBtn(b.port, outdated(b) ? "Update" : "Flash again")}</td></tr>`)
+    .concat(M.new.map(d => `<tr>
+      <td>${d.port}</td><td>New board <span class="hint">${d.desc.replace(/ \(COM\d+\)$/, "")}</span></td>
+      <td class="hint">${fw(d.port, "no MFD firmware")}</td><td></td>
+      <td>${flashBtn(d.port, "Flash")}</td></tr>`));
+  $("#mfdtable tbody").innerHTML = rows.length ? rows.join("")
+    : `<tr><td colspan="5" class="hint">${M.available ? "No boards found yet: Find boards." : "This launcher has no pyserial: MFD boards cannot be reached from it."}</td></tr>`;
   $$("select[data-mfdport]").forEach(el => el.addEventListener("change", () =>
     mfdCall("/api/mfd/assign", { port: el.dataset.mfdport, mfd: +el.value }, `Telling ${el.dataset.mfdport} it is ${+el.value ? "MFD " + el.value : "no MFD"}...`)));
+  $$("button[data-mfdflash]").forEach(el => el.addEventListener("click", () => mfdFlash([el.dataset.mfdflash])));
+  const fresh = M.new.map(d => d.port).filter(p => !M.flash[p]);
+  $("#mfd_flash_new").style.display = fresh.length && M.firmware_found ? "" : "none";
+  $("#mfd_flash_new").textContent = fresh.length > 1 ? `Flash all ${fresh.length} new boards` : "Flash the new board";
+  $("#mfd_flash_new").dataset.ports = fresh.join(",");
   $("#mfd_test").textContent = M.testing ? "Stop test pictures" : "Show test pictures";
   $("#mfd_stream").checked = M.stream;
   $("#mfd_bridge").textContent = M.bridge ? "Stop the bridge" : "Start the bridge";
@@ -462,6 +485,7 @@ function renderMfd() {
     ? `Recorded from the game: MFD ${M.recorded.join(", ")}. The others are drawn.`
     : "No recordings: every MFD's test picture is drawn.";
   const missing = [1, 2, 3, 4, 5].filter(n => !counts[n]);
+  if (M.flashing) $$("#page-mfds button").forEach(b => b.disabled = true);
   $("#mfd_hint").textContent = M.errors.length ? "Trouble: " + M.errors.join("; ")
     : M.boards.length ? (missing.length ? `Not on a board yet: MFD ${missing.join(", ")}.` : "All five MFDs have a board.")
     : "Finding boards briefly opens every serial port.";
@@ -484,7 +508,36 @@ async function mfdCall(path, body, doing) {
 async function loadMfd() {
   M = await api("/api/mfd");
   renderMfd();
+  if (M.flashing) followFlash();
 }
+// Flashing runs in the launcher; the page follows it, then finds the boards
+// again - each one flashed answers as an MFD board from then on.
+async function mfdFlash(ports) {
+  if (!ports.length) return;
+  if (!confirm(`Put the MFD firmware (${M.firmware}) on ${ports.join(", ")}?\n\nWhatever the board ran before is replaced. Keep it plugged in until it is done.`)) return;
+  await mfdCall("/api/mfd/flash", { ports }, `Flashing ${ports.join(", ")}...`);
+  if (M.flashing) followFlash();
+}
+let flashTimer = null;
+function followFlash() {
+  if (flashTimer) return;
+  status("Flashing the boards: keep them plugged in...", true);
+  flashTimer = setInterval(async () => {
+    M = await api("/api/mfd");
+    renderMfd();
+    if (M.flashing) return;
+    clearInterval(flashTimer);
+    flashTimer = null;
+    const flash = M.flash, ports = Object.keys(flash), bad = ports.filter(p => flash[p].error);
+    await new Promise(r => setTimeout(r, 2500));           // the boards starting their firmware
+    await mfdCall("/api/mfd/scan", {}, "Finding the boards again...");
+    M.flash = flash;
+    renderMfd();
+    status(bad.length ? `Flashing failed on ${bad.join(", ")}: see the table.`
+      : `Flashed ${ports.join(", ")}: give each board its MFD.`, dirty, !!bad.length);
+  }, 1000);
+}
+$("#mfd_flash_new").addEventListener("click", e => mfdFlash(e.target.dataset.ports.split(",").filter(Boolean)));
 $("#mfd_scan").addEventListener("click", () => mfdCall("/api/mfd/scan", {}, "Looking for MFD boards..."));
 $("#mfd_test").addEventListener("click", () => mfdCall("/api/mfd/test", { on: !(M && M.testing) },
   M && M.testing ? "Stopping the test pictures..." : "Starting the test pictures..."));

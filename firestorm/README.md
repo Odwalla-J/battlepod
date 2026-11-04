@@ -82,7 +82,10 @@ It runs both games: the switch under the title plate picks **Firestorm** or
   PC; what is running, and the logs.
 
 - **MFD boards** - the cockpit's MFD screens (`firmware/esp32-mfd`): find
-  the boards on the serial ports, tell each which MFD it is (it keeps it),
+  the boards on the serial ports, flash a new one with the MFD firmware
+  (*Flash*: a board fresh from Elecrow, still on its demo, shows as *New
+  board*; `launcher/mfdflash.py`, no Arduino tools needed), tell each which
+  MFD it is (it keeps it, through flashing again too),
   and loop a test picture on all of them - each MFD's page drawn by the
   launcher (`launcher/mfdtest.py`), or four seconds recorded from the game's
   own MFDs while a mission streams them (kept in `profiles\mfd-test`).

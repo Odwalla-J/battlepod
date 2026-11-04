@@ -59,6 +59,7 @@ kind:
 |---|---|
 | 1 | capabilities: bit 0, it can inflate DEFLATE |
 | 2 | the largest FRAME body it takes, after inflating (at least 4096) |
+| 3 | (optional) the colour it shows the grey through, R, G, B - a module that keeps one (`TINT`) |
 
 Older modules end at the screen kind; the bridge reads a short `HELLO` as
 "no capabilities". This is an addition, not a new protocol version.

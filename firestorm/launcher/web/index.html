@@ -115,7 +115,8 @@
             <select id="mfd_layout"><option value="windows">Five windows</option><option value="wall">One wall (video-wall controller)</option></select>
             <span class="only-wall"><input id="wall_cols" class="num" placeholder="across"></span></div>
           <div class="row"><label>MFD colour</label>
-            <select id="mfd_tint"><option value="FFFFFF">White</option><option value="40FF60">Green phosphor</option><option value="FFB040">Amber</option></select></div>
+            <select id="mfd_tint"><option value="FFFFFF">White</option><option value="40FF60">Green phosphor</option><option value="FFB040">Amber</option></select>
+            <span class="hint">the MFD windows and the MFD boards (it is sent to the boards when saved)</span></div>
           <div class="row"><label>Radar</label>
             <select id="radar_rotate"><option value="0">As drawn (landscape)</option><option value="90">Upright, turned right (portrait monitor)</option><option value="270">Upright, turned left</option></select></div>
           <div class="row"><label></label><label class="check"><input type="checkbox" id="plasma"> Plasma sign (the pilot's name over the pod)</label></div>
@@ -232,14 +233,15 @@
     <!-- Console -->
     <section class="page" id="page-mfds">
       <h1>MFD boards</h1>
-      <p class="lead">The cockpit's MFD screens: display boards on USB (an Elecrow CrowPanel 7" with <span class="mono">firmware/esp32-mfd</span>). Tell each which MFD it is - it remembers - and check them with a test picture that loops.</p>
+      <p class="lead">The cockpit's MFD screens: display boards on USB (an Elecrow CrowPanel 7" with <span class="mono">firmware/esp32-mfd</span>). Flash a new board with the MFD firmware, tell each which MFD it is - it remembers - and check them with a test picture that loops.</p>
       <div class="card">
-        <div class="card-head"><h3>Boards</h3><div><button class="btn ghost" id="mfd_scan">Find boards</button> <button class="btn" id="mfd_test">Show test pictures</button></div></div>
+        <div class="card-head"><h3>Boards</h3><div><button class="btn ghost" id="mfd_scan">Find boards</button> <button class="btn" id="mfd_flash_new" style="display:none">Flash new boards</button> <button class="btn" id="mfd_test">Show test pictures</button></div></div>
         <table class="tbl" id="mfdtable">
-          <thead><tr><th>Port</th><th>Board</th><th>Firmware</th><th>Is MFD</th></tr></thead>
+          <thead><tr><th>Port</th><th>Board</th><th>Firmware</th><th>Is MFD</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
         <p class="hint" id="mfd_hint">Finding boards briefly opens every serial port.</p>
+        <p class="hint">A board fresh from Elecrow runs its demo and shows here as <i>New board</i>: <b>Flash</b> puts the MFD firmware on it (about 25 s, several boards at once) and it is found again as an MFD board, ready to be given its MFD. Flashing again keeps the MFD a board was given. Only ports with the board's CH340 USB chip are offered, and only an ESP32-S3 is written to.</p>
         <p class="hint">BattleTech 3.0: any board found and given an MFD here shows the 3.0 cockpit's panel during a battle - its key labels lit as the game lights them, the message line, engine status and weapon readout - drawn by the bridge, which the battle starts with it.</p>
       </div>
       <div class="card">

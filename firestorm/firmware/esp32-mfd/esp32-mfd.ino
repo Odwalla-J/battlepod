@@ -3,7 +3,7 @@
 // A cockpit module (docs/MODULE_PROTOCOL.md) with a framebuffer: it answers
 // the bridge's HELLO? as class "mfd", takes the MFD picture stream
 // (docs/MFD_STREAMING_PROTOCOL.md: FRAME parts of RLA rectangles, DEFLATE
-// with the ROM's tinfl) straight into the panel's framebuffer, and says
+// with the ROM's tinfl) into a grey framebuffer the panel is fed from, and says
 // FRAME_ACK when a frame is on the screen and SYNC when it needs a whole one.
 // tools/mfdstream.py's Decoder is the reference; this is it in C.
 //
@@ -21,20 +21,21 @@
 #include "esp_lcd_panel_ops.h"
 #include "miniz.h"                // tinfl, in the ESP32-S3 ROM
 #include <Preferences.h>
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 // ---- this module
 // Its name is which MFD it is - "mfd:1" to "mfd:5", the names in
 // layouts/firestorm-mfds - kept in flash and set by the host (NAME, below;
 // the launcher's MFD boards page). Never named, it is "mfd-" and the end of
 // its MAC address, which no layout knows: the bridge leaves it alone.
-#define FIRMWARE    "esp32-mfd 0.4"
+// Its colour - the launcher's MFD colour, white at first - is kept the same
+// way (TINT, below).
+#define FIRMWARE    "esp32-mfd 0.6"
 #define LINK_BAUD   2000000
 #ifndef PANEL_CORE
 #define PANEL_CORE  0                 // the core the panel's interrupt runs on: see panel_task
 #endif
-#define TINT_R      255               // the MFD's colour: white, as the shim's windows
-#define TINT_G      255
-#define TINT_B      255
 
 // ---- the panel (DIS08070H v3.0)
 #define LCD_W 800
@@ -44,21 +45,78 @@
 #define MFD_X ((LCD_W - MFD_W) / 2)
 #define BACKLIGHT_PIN 2
 
-// Two framebuffers, RGB565, LCD_W x LCD_H, in PSRAM: one on the screen, one
-// the next update is decoded into. A finished update is put on the screen
-// whole, at a frame boundary, so no half-drawn picture is ever seen (a
-// tear); then its rectangles are copied into the other buffer, so both
-// hold the frame and the next update - a change to it - applies to either.
-static uint16_t *fbs[2];
-static int front = 0;                 // the buffer on the screen
-static uint16_t *fb;                  // the other: where updates are decoded
+// Two framebuffers of the MFD's grey, MFD_W x MFD_H, a byte a pixel, in
+// PSRAM: one on the screen, one the next update is decoded into. The panel
+// has no framebuffer of its own: the driver's two bounce buffers in internal
+// RAM, BOUNCE_LINES each, are filled here (on_bounce_empty) from the grey one on
+// the screen, through the tint, as the panel scans. A finished update goes
+// on the screen whole - the feed takes the other buffer from the top of the
+// next frame, so no half-drawn picture is ever seen (a tear) - and then its
+// rectangles are copied into the other buffer, so both hold the frame and
+// the next update, a change to it, applies to either.
+//
+// Before 0.6 the buffers were the panel's own, RGB565, and the driver filled
+// the bounce buffers from them: twice the PSRAM traffic, and a whole frame
+// decoded and copied took enough of it that a refill came too late - the
+// picture slipped, part of its bottom at the top.
+static uint8_t *greys[2];
+static volatile int front = 0;        // the buffer on the screen
+static volatile int next = -1;        // the one to show from the next frame
+static uint8_t *fb;                   // where updates are decoded: greys[front ^ 1]
 static uint16_t lut[256];             // grey -> RGB565 through the tint
+static uint8_t tint[3] = { 255, 255, 255 };   // the MFD's colour, kept in flash (TINT)
 static esp_lcd_panel_handle_t panel;
-static SemaphoreHandle_t fb_free;     // given when the buffer just left is no longer read
+static SemaphoreHandle_t fb_free;     // given when the feed has taken the next buffer
 
-static bool IRAM_ATTR on_fb_complete(esp_lcd_panel_handle_t p, const esp_lcd_rgb_panel_event_data_t *e, void *ctx) {
+#ifndef BOUNCE_LINES
+#define BOUNCE_LINES 30                // lines a bounce buffer (480 a whole number of them): 1.8 ms to refill one
+#endif
+#define LINE_US      60                // a line of the panel, blanking and all: 901 clocks at 15 MHz
+
+// Whether the feed keeps up: a band filled later than a band's time after
+// the panel wanted it was sent unfilled (a slip). Told with the link's errors.
+static volatile uint32_t pv_vsync, pv_frames, pv_slips, pv_worst, pv_base;
+
+static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t p, const esp_lcd_rgb_panel_event_data_t *e, void *ctx) {
+  pv_vsync = (uint32_t)esp_timer_get_time();
+  pv_frames++;
+  return false;
+}
+
+static bool IRAM_ATTR on_bounce_empty(esp_lcd_panel_handle_t p, void *buf, int pos_px, int len_bytes, void *ctx) {
   BaseType_t woke = pdFALSE;
-  xSemaphoreGiveFromISR(fb_free, &woke);
+  if (pos_px == 0 && next >= 0) {               // the top of a frame: the new picture from here
+    front = next;
+    next = -1;
+    xSemaphoreGiveFromISR(fb_free, &woke);
+  }
+  const uint8_t *g = greys[front];
+  uint16_t *o = (uint16_t *)buf;
+  int y = pos_px / LCD_W, lines = len_bytes / (LCD_W * 2);
+  for (int r = 0; r < lines; r++, y++) {
+    memset(o, 0, MFD_X * 2);
+    o += MFD_X;
+    const uint32_t *s = (const uint32_t *)(g + (size_t)y * MFD_W);
+    for (int i = 0; i < MFD_W / 4; i++, o += 4) {
+      uint32_t v = s[i];
+      o[0] = lut[v & 0xFF];
+      o[1] = lut[v >> 8 & 0xFF];
+      o[2] = lut[v >> 16 & 0xFF];
+      o[3] = lut[v >> 24];
+    }
+    memset(o, 0, (LCD_W - MFD_X - MFD_W) * 2);
+    o += LCD_W - MFD_X - MFD_W;
+  }
+  // Past the first two bands (filled ahead, round the VSYNC), each band is
+  // filled a fixed time after the VSYNC plus its lines.
+  int line = pos_px / LCD_W;
+  if (line >= 2 * BOUNCE_LINES && pv_frames > 32) {
+    int32_t d = (int32_t)((uint32_t)esp_timer_get_time() - pv_vsync) - line * LINE_US;
+    if (!pv_base || d < (int32_t)pv_base) pv_base = d > 0 ? d : 1;
+    uint32_t late = d - pv_base;
+    if (late > pv_worst) pv_worst = late;
+    if (late > BOUNCE_LINES * LINE_US) pv_slips++;
+  }
   return woke == pdTRUE;
 }
 
@@ -76,11 +134,8 @@ static void panel_start() {
   c.timings.vsync_back_porch = 13;
   c.timings.flags.pclk_active_neg = 1;
   c.data_width = 16;
-  c.num_fbs = 2;
-  // Scanned out of internal RAM, refilled from PSRAM a band at a time; 20
-  // lines give the refill 2.6 ms of slack when the CPU is writing PSRAM hard
-  // (a whole frame decoded) - short of it, the picture rolls for a frame.
-  c.bounce_buffer_size_px = LCD_W * 20;
+  c.flags.no_fb = 1;                             // fed by on_bounce_empty, from the grey
+  c.bounce_buffer_size_px = LCD_W * BOUNCE_LINES;
   c.hsync_gpio_num = 39;
   c.vsync_gpio_num = 40;
   c.de_gpio_num = 41;
@@ -88,36 +143,33 @@ static void panel_start() {
   c.disp_gpio_num = -1;
   const int data[16] = { 15, 7, 6, 5, 4,  9, 46, 3, 8, 16, 1,  14, 21, 47, 48, 45 };  // B0-4 G0-5 R0-4
   for (int i = 0; i < 16; i++) c.data_gpio_nums[i] = data[i];
-  c.flags.fb_in_psram = 1;
   ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&c, &panel));
-  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
-  ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-  void *p0 = nullptr, *p1 = nullptr;
-  ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel, 2, &p0, &p1));
-  fbs[0] = (uint16_t *)p0;
-  fbs[1] = (uint16_t *)p1;
   fb_free = xSemaphoreCreateBinary();
   esp_lcd_rgb_panel_event_callbacks_t cbs = {};
-  cbs.on_frame_buf_complete = on_fb_complete;
+  cbs.on_bounce_empty = on_bounce_empty;
+  cbs.on_vsync = on_vsync;
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(panel, &cbs, NULL));
-  ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_W, LCD_H, fbs[0]));
-  front = 0;
-  fb = fbs[1];
+  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
+  ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
   ledcAttach(BACKLIGHT_PIN, 1220, 8);
   ledcWrite(BACKLIGHT_PIN, 255);
 }
 
 static void make_lut() {
   for (int v = 0; v < 256; v++) {
-    int r = v * TINT_R / 255, g = v * TINT_G / 255, b = v * TINT_B / 255;
+    int r = v * tint[0] / 255, g = v * tint[1] / 255, b = v * tint[2] / 255;
     lut[v] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
   }
 }
 
-// Until the first frame: black.
-static void clear_screen() {
-  memset(fbs[0], 0, LCD_W * LCD_H * 2);
-  memset(fbs[1], 0, LCD_W * LCD_H * 2);
+// Until the first frame: black. Before the panel starts.
+static void make_buffers() {
+  for (int i = 0; i < 2; i++) {
+    greys[i] = (uint8_t *)heap_caps_malloc(MFD_W * MFD_H, MALLOC_CAP_SPIRAM);
+    memset(greys[i], 0, MFD_W * MFD_H);
+  }
+  front = 0;
+  fb = greys[1];
 }
 
 // The rectangles of the update being decoded, to copy across once it is shown.
@@ -134,19 +186,22 @@ static void note_rect(int x, int y, int w, int h) {
 // Put the decoded buffer on the screen at the next frame, wait until the
 // one it replaces is no longer read, and bring that one up to date.
 static void present() {
+  int back = front ^ 1;
   xSemaphoreTake(fb_free, 0);
-  esp_lcd_panel_draw_bitmap(panel, 0, 0, LCD_W, LCD_H, fb);
-  xSemaphoreTake(fb_free, pdMS_TO_TICKS(100));     // at most a frame and a bit (31.7 Hz)
-  front ^= 1;
-  uint16_t *shown = fbs[front];
-  fb = fbs[front ^ 1];
+  next = back;
+  if (xSemaphoreTake(fb_free, pdMS_TO_TICKS(100)) != pdTRUE) {   // a frame and a bit (31.7 Hz)
+    front = back;                                // the panel is not running: no one to wait for
+    next = -1;
+  }
+  const uint8_t *shown = greys[front];
+  fb = greys[front ^ 1];
   if (rects_all) {
-    for (int y = 0; y < MFD_H; y++) memcpy(fb + (size_t)y * LCD_W + MFD_X, shown + (size_t)y * LCD_W + MFD_X, MFD_W * 2);
+    memcpy(fb, shown, MFD_W * MFD_H);
   } else {
     for (int i = 0; i < n_rects; i++)
       for (int y = rects[i].y; y < rects[i].y + rects[i].h; y++) {
-        size_t o = (size_t)y * LCD_W + MFD_X + rects[i].x;
-        memcpy(fb + o, shown + o, rects[i].w * 2);
+        size_t o = (size_t)y * MFD_W + rects[i].x;
+        memcpy(fb + o, shown + o, rects[i].w);
       }
   }
   n_rects = 0;
@@ -218,6 +273,7 @@ static void load_name() {
     snprintf(name, sizeof name, "mfd-%02X%02X%02X", (int)(mac >> 24 & 0xFF), (int)(mac >> 32 & 0xFF),
              (int)(mac >> 40 & 0xFF));
   }
+  if (prefs.getBytesLength("tint") == 3) prefs.getBytes("tint", tint, 3);
 }
 
 static void send_hello() {
@@ -234,6 +290,7 @@ static void send_hello() {
   p[n++] = 3;                                    // an 8-bit grey framebuffer
   p[n++] = 1;                                    // capabilities: DEFLATE
   put_be16(p + n, 4096); n += 2;                 // the largest FRAME body
+  memcpy(p + n, tint, 3); n += 3;                // its colour: R, G, B
   send(0x02, p, n);
 }
 
@@ -269,7 +326,7 @@ static bool lost(int reason) {
 static bool rla(const uint8_t *d, size_t len, int x, int y, int w, int h) {
   size_t i = 0;
   long n = (long)w * h, at = 0;
-  uint16_t prev = lut[0];
+  uint8_t prev = 0;
   while (at < n) {
     if (i >= len) return false;
     uint8_t b = d[i++];
@@ -281,16 +338,16 @@ static bool rla(const uint8_t *d, size_t len, int x, int y, int w, int h) {
     while (m) {
       int r = at / w, c = at % w;
       long k = min(m, (long)(w - c));
-      uint16_t *o = fb + (size_t)(y + r) * LCD_W + MFD_X + x + c;
+      uint8_t *o = fb + (size_t)(y + r) * MFD_W + x + c;
       if (kind == 0) {
         if (i + k > len) return false;
-        for (long j = 0; j < k; j++) o[j] = lut[d[i + j]];
+        memcpy(o, d + i, k);
         i += k;
       } else if (kind == 1) {
-        for (long j = 0; j < k; j++) o[j] = prev;
+        memset(o, prev, k);
       } else {
         if (y + r == 0) return false;
-        memcpy(o, o - LCD_W, k * 2);
+        memcpy(o, o - MFD_W, k);
       }
       prev = o[k - 1];
       at += k;
@@ -314,10 +371,7 @@ static bool apply(const uint8_t *body, size_t len) {
     note_rect(x, y, w, h);
     if (codec == 0) {
       if (n != (size_t)w * h) return false;
-      for (int r = 0; r < h; r++) {
-        uint16_t *o = fb + (size_t)(y + r) * LCD_W + MFD_X + x;
-        for (int c = 0; c < w; c++) o[c] = lut[d[r * w + c]];
-      }
+      for (int r = 0; r < h; r++) memcpy(fb + (size_t)(y + r) * MFD_W + x, d + r * w, w);
     } else if (codec == 1) {
       if (!rla(d, n, x, y, w, h)) return false;
     } else return false;
@@ -389,7 +443,7 @@ static void on_frame(const uint8_t *p, size_t n) {
 // ---- what goes wrong on the link, told to the host as ERROR (the bridge logs it)
 static volatile uint32_t err_fifo, err_full, err_frame, err_other;
 static uint32_t bad_packets, long_packets, told_at;
-static uint32_t told[6];
+static uint32_t told[6], told_slips = ~0u;       // the panel told once, then on a change
 
 static void on_rx_error(hardwareSerial_error_t e) {
   if (e == UART_FIFO_OVF_ERROR) err_fifo++;
@@ -401,6 +455,14 @@ static void on_rx_error(hardwareSerial_error_t e) {
 static void report_errors() {
   if (millis() - told_at < 5000) return;
   told_at = millis();
+  if (pv_slips != told_slips) {
+    told_slips = pv_slips;
+    char t[120];
+    int n = snprintf(t + 1, sizeof t - 1, "panel: %lu slips in %lu frames, worst refill %lu us late",
+                     (unsigned long)pv_slips, (unsigned long)pv_frames, (unsigned long)pv_worst);
+    t[0] = 1;
+    send(0x22, (const uint8_t *)t, 1 + n);
+  }
   uint32_t now[6] = { bad_packets, long_packets, err_fifo, err_full, err_frame, err_other };
   if (!memcmp(now, told, sizeof now)) return;
   memcpy(told, now, sizeof now);
@@ -438,6 +500,17 @@ static void on_message(const uint8_t *m, size_t n) {
       send_hello();
     }
     break;
+  case 0x18:                                                     // TINT: my colour, R G B, kept
+    if (pn == 3) {
+      if (memcmp(tint, p, 3)) {
+        memcpy(tint, p, 3);
+        make_lut();                              // the feed colours as it scans: from the next frame
+        prefs.putBytes("tint", tint, 3);
+        esp_lcd_rgb_panel_restart(panel);        // as for NAME
+      }
+      send_hello();
+    }
+    break;
   default: break;                                                // lamps and text: no keys yet
   }
 }
@@ -460,12 +533,12 @@ void setup() {
   Serial.begin(LINK_BAUD);
   Serial.setRxFIFOFull(64);                      // drain the FIFO half full, not nearly full
   Serial.onReceiveError(on_rx_error);
-  make_lut();
   load_name();
+  make_lut();
+  make_buffers();
   SemaphoreHandle_t done = xSemaphoreCreateBinary();
   xTaskCreatePinnedToCore(panel_task, "panel", 4096, done, 5, NULL, PANEL_CORE);
   xSemaphoreTake(done, portMAX_DELAY);
-  clear_screen();
   send_hello();
 }
 

@@ -6,7 +6,9 @@ A board is a cockpit module with a framebuffer (docs/MODULE_PROTOCOL.md,
 docs/MFD_STREAMING_PROTOCOL.md) on a serial port - firmware/esp32-mfd on an
 Elecrow CrowPanel 7", behind a CH340 at 2 Mbaud. Its name says which MFD it
 is ("mfd:1" .. "mfd:5", the names in layouts/firestorm-mfds) and lives in its
-flash; NAME (0x17) sets it.
+flash; NAME (0x17) sets it. Its colour - the launcher's MFD colour, the
+grey picture shown through it - lives there too; TINT (0x18) sets it
+(firmware 0.5 on).
 
 The test picture for each MFD is its page drawn here - its key labels, its
 title, something moving - or, once recorded, a few seconds of the game's own
@@ -15,7 +17,7 @@ frames are kept beside the game, in profiles\\mfd-test, never in this
 repository). Either loops on the board as the bridge would send it: an
 update for each change, DEFLATE, a whole frame when the board asks.
 
-usage: mfdtest.py scan | name PORT N | test [SECONDS] | record GAME_DIR [SECONDS]
+usage: mfdtest.py scan | name PORT N | tint PORT RRGGBB | test [SECONDS] | record GAME_DIR [SECONDS]
 (needs pyserial)
 """
 import os
@@ -42,7 +44,8 @@ except ImportError:
 
 BAUD = 2000000
 W, H = 640, 480
-NAME = 0x17             # host -> module: the name to keep (the MFD it is)
+NAME = mp.NAME          # host -> module: the name to keep (the MFD it is)
+TINT = mp.TINT          # host -> module: the colour to keep, R G B
 FPS = 10
 LOOP = 40               # frames in a drawn loop: 4 s
 
@@ -283,7 +286,8 @@ class Board:
 
     def describe(self):
         i = self.info or {}
-        return {"port": self.port, "uid": i.get("uid", ""), "firmware": i.get("firmware", ""), "mfd": self.mfd}
+        return {"port": self.port, "uid": i.get("uid", ""), "firmware": i.get("firmware", ""), "mfd": self.mfd,
+                "tint": i.get("tint")}
 
 
 def ports():
@@ -336,6 +340,31 @@ def assign(port, mfd):
                         return b.describe()
             time.sleep(0.02)
         raise ValueError("the board on %s did not take the name %s (its firmware may be older)" % (port, name))
+    finally:
+        b.close()
+
+
+def set_tint(port, rgb):
+    """Give the board on port its colour, "RRGGBB"; its describe() after,
+    with "tint" None if its firmware is too old to keep one."""
+    want = rgb.upper()
+    b = Board(port)
+    try:
+        b.open()
+        if not b.hello():
+            raise ValueError("no MFD board answers on %s" % port)
+        if b.info.get("tint") in (None, want):
+            return b.describe()
+        b.send(TINT, bytes.fromhex(want))
+        end = time.time() + 1.5
+        while time.time() < end:
+            for t, _, p in b.poll():
+                if t == mp.HELLO:
+                    b.info = mp.parse_hello(p)
+                    if b.info.get("tint") == want:
+                        return b.describe()
+            time.sleep(0.02)
+        raise ValueError("the board on %s did not take the colour %s" % (port, want))
     finally:
         b.close()
 
@@ -451,6 +480,8 @@ def main(argv):
             print(d)
     elif argv[0] == "name":
         print(assign(argv[1], int(argv[2])))
+    elif argv[0] == "tint":
+        print(set_tint(argv[1], argv[2]))
     elif argv[0] == "test":
         t = Tester()
         t.start(scan())
