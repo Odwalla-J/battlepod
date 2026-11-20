@@ -268,6 +268,9 @@ function renderPlasma() {
   const box = $("#pl-try");
   box.innerHTML = "";
   box.appendChild(signCanvas(sign));
+  PL_LAST = sign.bytes;
+  $("#pl-led-pattern").innerHTML = "";
+  $("#pl-led-pattern").appendChild(signCanvas(rawSign(wiringTest())));
   $("#pl-bytes").textContent = sign.bytes.map(b => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
   $("#pl-line").textContent = sign.shown ? `Rank line: "${sign.shown}" - the shim's, on rows 0-6.` :
     plShowRanks() ? "No rank line: " + (trank ? "" : "a pilot with no matches is a Recruit, and Recruits have none.") : "No rank line: ranks are off.";
@@ -280,6 +283,51 @@ function renderPlasma() {
     $("#pl-long").appendChild(d);
   }
 }
+
+// ------------------------------------------------------------ the LED sign
+// A board on this PC (firmware/rp2040-plasma) takes the same bytes: Try it's
+// sign as the game's, or a test pattern written in the sign's own dots.
+let PL_LAST = null;     // the sign's bytes as Try it shows them
+
+function rawSign(bytes) {
+  const s = new Sign({}, false, plWidth());
+  s.inside = true;                      // the sign's own x's: nothing moved, no rank line
+  s.feed(bytes);
+  s.inside = false;
+  return s;
+}
+
+function wiringTest() {
+  const w = plWidth(), out = [0x1B, 0x40, 0x1B, 0x58, 0, 0, w - 1, PL_H - 1, 0x1B, 0x4B, 0];
+  const text = (s, x, y) => { out.push(0x1B, 0x52, x, 0x1B, 0x51, y); for (const c of s) out.push(c.charCodeAt(0)); };
+  text("TL", 3, 3); text("TR", w - 15, 3); text("BL", 3, PL_H - 10); text("BR", w - 15, PL_H - 10);
+  for (let x = 0; x < w; x++) {         // after the letters, whose cells would rub it out
+    const y = Math.round(x * (PL_H - 1) / (w - 1));
+    out.push(0x1B, 0x78, 1, x, y, x, y);
+  }
+  return out;
+}
+
+function ledState(r) {
+  $("#pl-led").textContent = !r ? "" : !r.available ? "This launcher has no pyserial, which the LED sign needs."
+    : r.boards.length ? `The sign's board is on ${r.boards.join(", ")}; the pod's game finds it by itself (shim.ini [plasma] device).`
+    : "No LED sign on this PC - plug in its board (Firestorm Plasma, USB 1209:0004), then Find it.";
+}
+
+async function ledSend(bytes, doing) {
+  status(doing, dirty);
+  const r = await api("/api/plasma/send", { bytes });
+  if (r.error) status("Error: " + r.error, true, true);
+  else { status(r.message, dirty); ledState({ available: true, boards: r.boards }); }
+}
+
+async function ledFind() { ledState(await api("/api/plasma").catch(() => null)); }
+
+$("#pl-led-find").addEventListener("click", ledFind);
+$("#pl-led-try").addEventListener("click", () => PL_LAST && ledSend(PL_LAST, "Showing Try it on the LED sign..."));
+$("#pl-led-test").addEventListener("click", () => ledSend(wiringTest(), "Showing the wiring test..."));
+$("#pl-led-all").addEventListener("click", () => ledSend([0x1B, 0x40, 0x1B, 0x78, 1, 0, 0, plWidth() - 1, PL_H - 1], "Lighting every dot..."));
+$("#pl-led-clear").addEventListener("click", () => ledSend([0x1B, 0x40], "Clearing the LED sign..."));
 
 function stars(line) {
   const n = (line.match(/^\*+/) || [""])[0].length;
@@ -305,6 +353,7 @@ async function loadPlasma() {
     $("#pl-rank").value = "4";          // Sergeant: the first with stars
   }
   renderPlasma();
+  ledFind();
 }
 
 ["#pl-name", "#pl-tname", "#pl-place", "#pl-score"].forEach(s => $(s).addEventListener("input", renderPlasma));

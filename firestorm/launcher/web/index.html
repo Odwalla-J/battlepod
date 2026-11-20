@@ -282,6 +282,12 @@
         <details><summary class="hint">The bytes the game sends the sign, for a real display (the control port's <span class="mono">plasma &lt;hex&gt;</span>; the rank line is added to the same stream)</summary><pre id="pl-bytes" class="hint mono pl-bytes"></pre></details>
       </div>
       <div class="card">
+        <div class="card-head"><h3>The LED sign</h3><div><button class="btn ghost" id="pl-led-find">Find it</button> <button class="btn" id="pl-led-try">Show Try it</button> <button class="btn" id="pl-led-test">Wiring test</button> <button class="btn ghost" id="pl-led-all">Every dot</button> <button class="btn ghost" id="pl-led-clear">Clear</button></div></div>
+        <p class="hint" id="pl-led"></p>
+        <div id="pl-led-pattern" class="sign-big"></div>
+        <p class="hint">The wiring test, as the sign should show it: a frame round the edge, a line corner to corner from the top left, and each corner named. A half missing or doubled is a colour or address wire (R1/R2, A-D); a picture upside down or back to front is the panel's input end. <i>Every dot</i> lights the whole sign, for its brightness and its power supply. While the pod's game runs it has the sign; these work with the game closed.</p>
+      </div>
+      <div class="card">
         <h3>Names and matches</h3>
         <div id="pl-long" class="sign-grid"></div>
         <p class="hint">In a match the game puts the pilot's place and score in two boxes under the name, every second or so - the name goes small then, just above them, to leave the boxes room, and each number sits in the middle of its box; after it, the sign goes dark until the next pilot is seated.</p>

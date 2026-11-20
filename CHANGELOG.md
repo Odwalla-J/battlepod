@@ -57,7 +57,10 @@ All notable changes to this project are documented here. The format follows
   port, "Firestorm Plasma" (1209:0004), taking the game's sign bytes. The
   shim's `[plasma] device` (`auto` by default: finds the board by its USB
   id; or `COMn`; `0` none) sends it everything the sign gets, and the sign
-  as it stands when the board is found or plugged in again.
+  as it stands when the board is found or plugged in again. The launcher's
+  Plasma sign page has an **LED sign** card: whether the board is there, and
+  buttons that put Try it's sign, a wiring test (frame, diagonal, named
+  corners), every dot lit, or nothing on it.
 - `fsrun` hides the console window Windows gives it when VWE's Launcher.exe
   starts a pod's game, and shows it only to report a failure.
 

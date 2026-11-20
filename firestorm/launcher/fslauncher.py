@@ -131,6 +131,7 @@ WINDOWS = [("mfd1", "MFD 1", 320, 240), ("mfd2", "MFD 2", 320, 240), ("mfd3", "M
            ("mfd4", "MFD 4", 320, 240), ("mfd5", "MFD 5", 320, 240), ("radar", "Radar", 640, 480),
            ("plasma", "Plasma sign", 768, 192), ("mfd_wall", "MFD wall", 1600, 240)]
 PLASMA_WIDTHS = ("112", "128")  # the sign's dots across: the game's own, an LED matrix's (shim.ini [plasma] width)
+PLASMA_ID = (0x1209, 0x0004)    # the LED sign's board, firmware/rp2040-plasma (shim.ini [plasma] device)
 
 
 # ------------------------------------------------------------ ini files
@@ -1367,6 +1368,40 @@ class Launcher:
             ", and %d without its firmware" % len(self.mfd_new) if self.mfd_new else "")
         return self.mfd_state()
 
+    def plasma_ports(self):
+        """The LED sign's boards on this PC (firmware/rp2040-plasma), or None
+        without pyserial."""
+        mt = self.mfd_mod()
+        if mt.serial is None:
+            return None
+        return sorted(p.device for p in mt.serial.tools.list_ports.comports() if (p.vid, p.pid) == PLASMA_ID)
+
+    def plasma_state(self):
+        ports = self.plasma_ports()
+        return {"available": ports is not None, "boards": ports or []}
+
+    def plasma_send(self, body):
+        """Bytes for the LED sign - the page builds them, as the game's: Try it's
+        sign, or a test pattern - to every sign board on this PC."""
+        mt = self.mfd_mod()
+        ports = self.plasma_ports()
+        if ports is None:
+            raise ValueError("this launcher has no pyserial, which the LED sign needs")
+        if not ports:
+            raise ValueError("no LED sign on this PC: plug in its board (USB 1209:0004)")
+        data = bytes(int(b) & 0xFF for b in body.get("bytes") or [])
+        sent, busy = [], []
+        for port in ports:
+            try:
+                with mt.serial.Serial(port, 9600, timeout=1, write_timeout=2) as s:
+                    s.write(data)
+                sent.append(port)
+            except (mt.serial.SerialException, OSError):
+                busy.append(port)
+        if not sent:
+            raise ValueError("the sign on %s is in use - the pod's game has it while it runs" % ", ".join(busy))
+        return {"message": "On the sign (%s)." % ", ".join(sent), "boards": ports}
+
     def mfd_not_flashing(self):
         if self.mfd_flasher.running:
             raise ValueError("boards are being flashed: wait for them to finish")
@@ -1819,6 +1854,8 @@ def make_handler(app):
                 return self.send(200, app.mfd_state())
             if path == "/api/joy":
                 return self.send(200, {"joysticks": joysticks()})
+            if path == "/api/plasma":
+                return self.send(200, app.plasma_state())
             if path == "/api/ping":
                 return self.send(200, {"ok": True})
             if path == "/api/setup":
@@ -1913,6 +1950,10 @@ def make_handler(app):
                         return self.send(404, {"error": "not found"})
                     out = fn(body)
                     out.update(ok=True, message=app.message)
+                    return self.send(200, out)
+                elif self.path == "/api/plasma/send":
+                    out = app.plasma_send(body)
+                    out["ok"] = True
                     return self.send(200, out)
                 elif self.path.startswith("/api/bt3/"):
                     b = app.bt3
