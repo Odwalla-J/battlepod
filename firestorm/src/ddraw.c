@@ -4402,6 +4402,104 @@ static CRITICAL_SECTION g_pl_feed;		/* one writer at a time: the game, or the ra
 
 static void plasma_feed(const uint8_t *b, DWORD n);
 
+/* A real sign on a serial port, [plasma] device: "auto" (the default) finds
+ * an rp2040-plasma board (firmware/rp2040-plasma, USB 1209:0004) by its id,
+ * "COMn" names a port - a 128-dot LED matrix's board, or anything that takes
+ * the game's bytes at 9600 8N1 - and 0 is none. It gets what the control port
+ * is told, all of it, and when it is found - at the start, or plugged in
+ * later (looked for every 3 s) - the sign as it stands. */
+static HANDLE g_pl_dev = INVALID_HANDLE_VALUE;
+
+static HANDLE pl_dev_try(const char *port)
+{
+	char path[32];
+	COMMTIMEOUTS to = { 0 };
+	DCB dcb = { 0 };
+	HANDLE h;
+
+	snprintf(path, sizeof path, "\\\\.\\%s", port);
+	h = CreateFileA(path, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+	if (h == INVALID_HANDLE_VALUE) return h;
+	dcb.DCBlength = sizeof dcb;
+	if (GetCommState(h, &dcb)) {
+		BuildCommDCBA("9600,n,8,1", &dcb);
+		dcb.fDtrControl = DTR_CONTROL_ENABLE;
+		SetCommState(h, &dcb);
+	}
+	to.WriteTotalTimeoutConstant = 250;	/* a sign gone quiet never holds the game up long */
+	SetCommTimeouts(h, &to);
+	say("plasma: the sign on %s", port);
+	return h;
+}
+
+/* The first rp2040-plasma board Windows has given a port that opens. */
+static HANDLE pl_dev_find(void)
+{
+	HKEY k, ik;
+	char inst[128], sub[160], port[16];
+	DWORD i, n, t;
+	HANDLE h = INVALID_HANDLE_VALUE;
+
+	if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Enum\\USB\\VID_1209&PID_0004&MI_00",
+			  0, KEY_READ, &k))
+		return h;
+	for (i = 0; h == INVALID_HANDLE_VALUE; i++) {
+		n = sizeof inst;
+		if (RegEnumKeyExA(k, i, inst, &n, NULL, NULL, NULL, NULL)) break;
+		snprintf(sub, sizeof sub, "%s\\Device Parameters", inst);
+		if (RegOpenKeyExA(k, sub, 0, KEY_READ, &ik)) continue;
+		memset(port, 0, sizeof port);
+		n = sizeof port - 1;
+		if (!RegQueryValueExA(ik, "PortName", NULL, &t, (BYTE *)port, &n) && t == REG_SZ)
+			h = pl_dev_try(port);		/* a board unplugged leaves its port's name behind */
+		RegCloseKey(ik);
+	}
+	RegCloseKey(k);
+	return h;
+}
+
+static void pl_dev_send(const uint8_t *b, DWORD n)
+{
+	DWORD w;
+
+	if (g_pl_dev == INVALID_HANDLE_VALUE || !n) return;
+	if (!WriteFile(g_pl_dev, b, n, &w, NULL) || w != n) {
+		say("plasma: the sign stopped answering");
+		CloseHandle(g_pl_dev);
+		g_pl_dev = INVALID_HANDLE_VALUE;
+	}
+}
+
+/* With g_pl_feed held: find the sign if it is missing, and if found, send it
+ * the sign as it stands - cleared, each row's runs of lit dots as filled
+ * rectangles, then the game's font and place. */
+static void pl_dev_poll(void)
+{
+	static char dev[16] = "?";
+	static uint8_t out[3 + PL_H * (PL_MAX_W / 2 + 1) * 7 + 9];
+	int k = 0, x, y, x0;
+
+	if (g_pl_dev != INVALID_HANDLE_VALUE) return;
+	if (dev[0] == '?') cfg_str("plasma", "device", "auto", dev, sizeof dev);
+	if (!dev[0] || !strcmp(dev, "0")) return;
+	g_pl_dev = _stricmp(dev, "auto") ? pl_dev_try(dev) : pl_dev_find();
+	if (g_pl_dev == INVALID_HANDLE_VALUE) return;
+	out[k++] = 0x1B; out[k++] = 0x40;
+	EnterCriticalSection(&g_pl_lock);
+	for (y = 0; y < PL_H; y++)
+		for (x = 0; x < g_pl_w; x++) {
+			if (!g_pl[y][x]) continue;
+			for (x0 = x; x + 1 < g_pl_w && g_pl[y][x + 1]; x++) ;
+			out[k++] = 0x1B; out[k++] = 0x78; out[k++] = 1;
+			out[k++] = (uint8_t)x0; out[k++] = (uint8_t)y; out[k++] = (uint8_t)x; out[k++] = (uint8_t)y;
+		}
+	LeaveCriticalSection(&g_pl_lock);
+	out[k++] = 0x1B; out[k++] = 0x4B; out[k++] = (uint8_t)g_pl_font;
+	out[k++] = 0x1B; out[k++] = 0x51; out[k++] = (uint8_t)g_pl_cy;
+	out[k++] = 0x1B; out[k++] = 0x52; out[k++] = (uint8_t)g_pl_cx;
+	pl_dev_send(out, k);
+}
+
 /* Put the rank line for the pilot named on the sign on its top row - again
  * if `force` (the game may have drawn over it), else only if it changed. */
 static void plasma_rank(int force)
@@ -4510,6 +4608,7 @@ static void plasma_poll(void)
 	if (!g_plasma_h || GetTickCount() - last < 3000) return;
 	last = GetTickCount();
 	EnterCriticalSection(&g_pl_feed);
+	pl_dev_poll();
 	plasma_rank(0);
 	LeaveCriticalSection(&g_pl_feed);
 }
@@ -4522,8 +4621,9 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 	static uint8_t cmd[8];
 	static int have, need, in_text;
 	char hex[3 * 64 + 1];
+	uint8_t dv[256];			/* for the real sign, if there is one */
 	DWORD i;
-	int k = 0, told = 0;
+	int k = 0, told = 0, nd = 0;
 
 	EnterCriticalSection(&g_pl_feed);
 	if (!g_pl_inside && plasma_box_text(b, n)) {
@@ -4538,6 +4638,8 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 		     (cmd[1] == 0x78 && (have == 3 || have == 5))))
 			c = (uint8_t)(c + g_pl_dx);
 		if (k < (int)sizeof hex - 4) { k += sprintf(hex + k, " %02X", c); told++; }
+		dv[nd++] = c;
+		if (nd == (int)sizeof dv) pl_dev_send(dv, nd), nd = 0;
 		if (have) {
 			in_text = 0;
 			cmd[have++] = c;
@@ -4584,6 +4686,7 @@ static void plasma_feed(const uint8_t *b, DWORD n)
 		}
 	}
 	LeaveCriticalSection(&g_pl_lock);
+	pl_dev_send(dv, nd);
 	rio_tell("plasma%s%s", hex, told < (int)n ? " ..." : "");
 	InterlockedExchange(&g_pl_dirty, 1);
 	if (!g_pl_inside) {
@@ -4640,6 +4743,9 @@ static HANDLE plasma_open(const char *name)
 		if (cfg_int("shim", "cockpit_windows", g_cockpit))
 			g_plasma_win = make_window("Plasma sign", "plasma", 1500, 0, g_pl_w * 6, PL_H * 6);
 		InterlockedExchange(&g_pl_dirty, 1);
+		EnterCriticalSection(&g_pl_feed);
+		pl_dev_poll();
+		LeaveCriticalSection(&g_pl_feed);
 	}
 	say("plasma: the game opened %s; the virtual sign answers", name);
 	return g_plasma_h;

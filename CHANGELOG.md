@@ -52,6 +52,12 @@ All notable changes to this project are documented here. The format follows
   a General. In a match the name goes small, just above the place and
   score boxes, which drew over a large name's last rows, and the place and
   score sit in the middle of their boxes.
+- **The plasma sign on a real LED matrix** (`firestorm/firmware/rp2040-plasma`):
+  an RP2040-Zero drives a 128x32 HUB75 panel in orange and is a USB serial
+  port, "Firestorm Plasma" (1209:0004), taking the game's sign bytes. The
+  shim's `[plasma] device` (`auto` by default: finds the board by its USB
+  id; or `COMn`; `0` none) sends it everything the sign gets, and the sign
+  as it stands when the board is found or plugged in again.
 - `fsrun` hides the console window Windows gives it when VWE's Launcher.exe
   starts a pod's game, and shows it only to report a failure.
 

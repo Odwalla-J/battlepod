@@ -4,7 +4,7 @@ CC      := /c/msys64/mingw32/bin/gcc
 CFLAGS  := -O2 -Wall -Wno-unused-parameter
 BUILD   := build
 # Where `make install` copies the DLL: a working copy of the game, never the original.
-GAME    ?= ../firestorm-run/MW4
+GAME    ?= ../../firestorm-run/MW4
 # Where `make package` lays out a copy that starts from Firestorm.exe (tools/package.py).
 DEST    ?= $(BUILD)/package
 

@@ -145,6 +145,8 @@ moved across to its middle, and so do the bytes the control port passes on); and
 (27-42, 19-30) and (42-93, 19-30), 5x7.
 
 The shim answers the port and draws the sign in a window; the bytes also go
-to the control port as `plasma <hex>`, for a real display. Over a pilot's
+to the control port as `plasma <hex>`, and all of them to a real sign on a
+serial port, `[plasma] device` - by default an rp2040-plasma board on a
+128x32 LED matrix, found by its USB id (`../firmware/rp2040-plasma`). Over a pilot's
 name it adds their rank on the top row (rows 0-6, unused by the game), in
 the same commands, so a real display shows it too ([CAREERS.md](CAREERS.md)).
