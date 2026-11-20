@@ -130,6 +130,7 @@ PAD_BUTTONS = ["none", "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Star
 WINDOWS = [("mfd1", "MFD 1", 320, 240), ("mfd2", "MFD 2", 320, 240), ("mfd3", "MFD 3", 320, 240),
            ("mfd4", "MFD 4", 320, 240), ("mfd5", "MFD 5", 320, 240), ("radar", "Radar", 640, 480),
            ("plasma", "Plasma sign", 768, 192), ("mfd_wall", "MFD wall", 1600, 240)]
+MFD_WINDOWS = ("mfd1", "mfd2", "mfd3", "mfd4", "mfd5", "mfd_wall")
 PLASMA_WIDTHS = ("112", "128")  # the sign's dots across: the game's own, an LED matrix's (shim.ini [plasma] width)
 PLASMA_ID = (0x1209, 0x0004)    # the LED sign's board, firmware/rp2040-plasma (shim.ini [plasma] device)
 
@@ -723,6 +724,9 @@ class Launcher:
                 "show_surface": shim.get("mfd", "show_surface", "1") == "1",
                 "wall_cols": shim.get("mfd_wall", "cols", "5"),
                 "radar_rotate": shim.get("radar", "rotate", "0"),
+                "mfd_windows": any(shim.get(s, "show", "1") != "0" for s in MFD_WINDOWS),
+                "radar_monitor": "off" if shim.get("radar", "show", "1") == "0" else shim.get("radar", "monitor", ""),
+                "plasma_window": shim.get("plasma", "show", "1") != "0",
                 "plasma": shim.get("plasma", "enabled", "1") == "1",
                 "plasma_ranks": shim.get("plasma", "ranks", "1") == "1",
                 "plasma_width": shim.get("plasma", "width", "128"),
@@ -787,6 +791,13 @@ class Launcher:
         shim.set("mfd", "show_surface", None if s["show_surface"] else "0")
         shim.set("mfd_wall", "cols", str(s["wall_cols"]) if s["mfd_layout"] == "wall" else None)
         shim.set("radar", "rotate", s["radar_rotate"] if s["radar_rotate"] in ("90", "270") else None)
+        # Windows on screen or not ([sec] show), and the radar on a whole monitor ([radar] monitor).
+        for sec in MFD_WINDOWS:
+            shim.set(sec, "show", None if s.get("mfd_windows", True) else "0")
+        rm = str(s.get("radar_monitor") or "")
+        shim.set("radar", "show", "0" if rm == "off" else None)
+        shim.set("radar", "monitor", rm if rm.isdigit() and rm != "0" else None)
+        shim.set("plasma", "show", None if s.get("plasma_window", True) else "0")
         shim.set("plasma", "enabled", None if s["plasma"] else "0")
         shim.set("plasma", "ranks", None if s.get("plasma_ranks", True) else "0")
         pw = str(s.get("plasma_width") or "128")

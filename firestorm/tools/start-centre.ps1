@@ -17,7 +17,7 @@
 # would; it assumes the console's window is the size the shim gives it and
 # that the slot-1 list holds Pilot1 (ctcl.ini [teslas]). Needs Python.
 param(
-  [string]$Game = (Join-Path $PSScriptRoot "..\..\firestorm-run\MW4"),
+  [string]$Game = (Join-Path $PSScriptRoot "..\..\..\firestorm-run\MW4"),
   [switch]$Mission, [switch]$NoBot, [switch]$Stop, [switch]$NoLaunch, [switch]$NoPrint,
   [string]$Pilot = "Pilot", [int]$LoadWait = 30
 )

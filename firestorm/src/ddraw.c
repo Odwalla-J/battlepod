@@ -294,6 +294,7 @@ static HWND g_radar_win;			/* one for every radar device */
 static HANDLE g_uiready;
 
 struct winreq { const char *title, *section; int x, y, w, h; HWND out; };
+static void monitor_rect(int n, RECT *r);
 
 static LRESULT CALLBACK win_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
@@ -325,7 +326,14 @@ static LRESULT CALLBACK ctl_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 		RECT rc;
 		int x = cfg_int(r->section, "x", r->x), y = cfg_int(r->section, "y", r->y);
 		int cw = cfg_int(r->section, "w", r->w), ch = cfg_int(r->section, "h", r->h);
+		int mon = cfg_int(r->section, "monitor", 0);
 
+		if (mon > 0) {		/* [section] monitor = n: all of monitor n, no border */
+			RECT m;
+			monitor_rect(mon, &m);
+			x = m.left; y = m.top; cw = m.right - m.left; ch = m.bottom - m.top;
+			style = WS_POPUP;
+		}
 		SetRect(&rc, 0, 0, cw, ch);
 		AdjustWindowRectEx(&rc, style, FALSE, ex);
 		r->out = CreateWindowExA(ex, "FirestormShimWindow", r->title, style,
@@ -392,6 +400,12 @@ static HWND make_window(const char *title, const char *section, int dx, int dy, 
 {
 	struct winreq r;
 
+	/* [section] show = 0: no window - an MFD whose picture goes to its board,
+	 * a sign on an LED matrix. The game draws on as before. */
+	if (!cfg_int(section, "show", 1)) {
+		say("window \"%s\" [%s] off (show = 0)", title, section);
+		return NULL;
+	}
 	if (!g_ctl) {
 		g_uiready = CreateEventA(NULL, TRUE, FALSE, NULL);
 		CreateThread(NULL, 0, ui_main, NULL, 0, NULL);
@@ -1048,7 +1062,7 @@ static void radar_present(struct dev *d)
 			if (radar_rotation() == 90) rot[x * h + (h - 1 - y)] = px;
 			else rot[(w - 1 - x) * h + y] = px;
 		}
-	draw_rgb(d->hwnd, rot, h, w, 0, 0, h, w);
+	draw_view(d->hwnd, rot, h, w);
 }
 
 static double ms_since(LARGE_INTEGER *t)
@@ -1296,6 +1310,7 @@ static void present(struct dev *d)
 		stream_offer(d);
 	} else if (d->kind == K_MAIN) draw_view(d->hwnd, d->rgb, d->w, d->h);
 	else if (d->kind == K_RADAR && radar_rotation()) radar_present(d);
+	else if (d->kind == K_RADAR) draw_view(d->hwnd, d->rgb, d->w, d->h);	/* its shape kept, on a whole monitor too */
 	else draw_rgb(d->hwnd, d->rgb, d->w, d->h, 0, 0, d->w, d->h);
 	g_t_draw[d->kind != K_MAIN] += ms_since(&t);
 	snapshot(d);
@@ -4809,10 +4824,13 @@ static int radar_button_at(HWND w, int x, int y)
 	RECT rc;
 	int u, v;			/* where in the landscape picture, of 1000 */
 
-	GetClientRect(w, &rc);
-	if (rc.right <= 0 || rc.bottom <= 0) return -1;
-	u = x * 1000 / rc.right;
-	v = y * 1000 / rc.bottom;
+	/* the picture's part of the window: 640x480, or 480x640 turned */
+	view_box(w, radar_rotation() ? 480 : 640, radar_rotation() ? 640 : 480, &rc);
+	if (rc.right <= rc.left || rc.bottom <= rc.top) return -1;
+	x -= rc.left; y -= rc.top;
+	if (x < 0 || y < 0 || x >= rc.right - rc.left || y >= rc.bottom - rc.top) return -1;
+	u = x * 1000 / (rc.right - rc.left);
+	v = y * 1000 / (rc.bottom - rc.top);
 	if (radar_rotation() == 90) { int t = u; u = v; v = 999 - t; }
 	else if (radar_rotation() == 270) { int t = u; u = 999 - v; v = t; }
 	if (v < 1000 * 80 / 480) return radar_button_index(1, u * 6 / 1000);

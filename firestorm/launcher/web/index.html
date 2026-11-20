@@ -114,12 +114,18 @@
           <div class="row"><label>MFDs</label>
             <select id="mfd_layout"><option value="windows">Five windows</option><option value="wall">One wall (video-wall controller)</option></select>
             <span class="only-wall"><input id="wall_cols" class="num" placeholder="across"></span></div>
+          <div class="row"><label></label><label class="check"><input type="checkbox" id="mfd_windows"> MFD windows on screen</label>
+            <span class="hint">off when the MFD boards show the MFDs: the boards get their pictures either way</span></div>
           <div class="row"><label>MFD colour</label>
             <select id="mfd_tint"><option value="FFFFFF">White</option><option value="40FF60">Green phosphor</option><option value="FFB040">Amber</option></select>
             <span class="hint">the MFD windows and the MFD boards (it is sent to the boards when saved)</span></div>
           <div class="row"><label>Radar</label>
             <select id="radar_rotate"><option value="0">As drawn (landscape)</option><option value="90">Upright, turned right (portrait monitor)</option><option value="270">Upright, turned left</option></select></div>
+          <div class="row"><label for="radar_monitor">Radar screen</label><select id="radar_monitor"></select>
+            <span class="hint">a whole monitor: the radar fills it, its shape kept, with nothing to size</span></div>
           <div class="row"><label></label><label class="check"><input type="checkbox" id="plasma"> Plasma sign (the pilot's name over the pod)</label></div>
+          <div class="row only-plasma"><label></label><label class="check"><input type="checkbox" id="plasma_window"> The sign's window on screen</label>
+            <span class="hint">off with an LED sign: it gets the sign either way</span></div>
           <div class="row"><label></label><label class="check"><input type="checkbox" id="show_surface"> Debug window with the whole MFD surface</label></div>
           <div class="row"><label>Arrange</label>
             <select id="arrange_mon"></select>
@@ -134,7 +140,7 @@
           <thead><tr><th>Window</th><th>x</th><th>y</th><th>Width</th><th>Height</th><th>No border</th></tr></thead>
           <tbody></tbody>
         </table>
-        <p class="hint">Positions are desktop coordinates; blank means the shim's default. Sizes are the picture inside the window.</p>
+        <p class="hint">Positions are desktop coordinates; blank means the shim's default. Sizes are the picture inside the window. Windows switched off above are not listed; a radar given a whole monitor takes that monitor's place and size.</p>
       </div>
     </section>
 

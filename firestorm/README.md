@@ -479,6 +479,8 @@ Optional, beside the game. A section can be specialised by role -
 | `main` | `gpu_present` | 1 | the card blits the view to the window (no read-back); 0 reads each frame back and draws it with GDI, as the MFDs and radar are |
 | `ready` | `text`, `sub` | (none) | a pod's main view while it waits for the console: `text` large and white on black, `sub` small and grey under it; none, the game's own idle screen. The pod agent sets them |
 | `mfd1`..`mfd5`, `radar`, `mfd_surface` | `x`, `y`, `w`, `h`, `borderless` | on the second monitor | each cockpit window |
+| `mfd1`..`mfd5`, `mfd_wall`, `radar`, `plasma`, `mfd_surface` | `show` | 1 | 0: no window - the MFD boards, the LED sign and the MFD stream get their pictures all the same (the Displays page's *MFD windows on screen*, *Radar screen: Off*, *The sign's window on screen*) |
+| the same | `monitor` | | n: the window is all of monitor n (numbered as `[main] monitor`), borderless, its `x`..`h` ignored; the radar keeps its shape, with black bars, and its buttons still click (*Radar screen: All of monitor n*) |
 | `mfd` | `tiles` | `L:R,L:G,L:B,R:R,R:G` | which part of the 1280x480 MFD surface each MFD shows: head `L`/`R`, then channel `R`/`G`/`B`, or `C` for the head in colour |
 | `mfd` | `tint` | `FFFFFF` | colour of the monochrome MFDs, e.g. `40FF60` for green phosphor |
 | `mfd` | `show_surface` | 1 | a window with the whole 1280x480 surface, for checking `tiles` |

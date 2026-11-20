@@ -61,6 +61,16 @@ All notable changes to this project are documented here. The format follows
   Plasma sign page has an **LED sign** card: whether the board is there, and
   buttons that put Try it's sign, a wiring test (frame, diagonal, named
   corners), every dot lit, or nothing on it.
+- **Only the screens a cockpit needs**: shim.ini `show = 0` leaves out any
+  cockpit window - with the five MFD boards and an LED sign, the MFD and
+  sign windows go, and the boards and sign are fed as before. **The radar
+  on a whole monitor**: `[radar] monitor = n` fills monitor n, borderless,
+  with nothing to size; the radar keeps its shape (black bars on a wide
+  monitor), and clicks on its buttons allow for the bars. The Displays page
+  has *MFD windows on screen*, *Radar screen* (its window, all of a monitor,
+  or off) and *The sign's window on screen*.
+- `start-centre.ps1` and the Makefile find `firestorm-run\MW4` by default
+  again (their default path was a folder short).
 - `fsrun` hides the console window Windows gives it when VWE's Launcher.exe
   starts a pod's game, and shows it only to report a failure.
 

@@ -35,9 +35,9 @@ window.addEventListener("hashchange", () => show(location.hash.slice(1) || "pc")
 // ------------------------------------------------------------ simple fields
 const TEXT = ["plasma_width", "mode", "bitdepth", "main_monitor", "main_x", "main_y", "main_w", "main_h", "mfd_layout", "mfd_tint",
   "wall_cols", "radar_rotate", "pad_index", "pad_deadzone", "ramp_ms", "capture_mouse", "vsync", "max_fps",
-  "print_to_file", "print_folder", "console_addr", "joy_deadzone"];
+  "print_to_file", "print_folder", "console_addr", "joy_deadzone", "radar_monitor"];
 const CHECK = ["keep_aspect", "show_surface", "plasma", "plasma_ranks", "pad_enabled", "pad_invert_y", "gpu_present", "frame_stats",
-  "start_printer", "joy_enabled"];
+  "start_printer", "joy_enabled", "mfd_windows", "plasma_window"];
 
 function fillFields() {
   const opts = (sel, items) => { $(sel).innerHTML = items.map(([v, t]) => `<option value="${v}">${t}</option>`).join(""); };
@@ -46,6 +46,9 @@ function fillFields() {
   opts("#main_monitor", mons);
   opts("#arrange_mon", mons);
   if (S.monitors.length > 1) $("#arrange_mon").value = S.monitors[1].n;
+  opts("#radar_monitor", [["", "In its window (Cockpit windows, below)"],
+    ...S.monitors.map(m => [String(m.n), `All of monitor ${m.n}${m.primary ? " (main)" : ""} - ${m.w} x ${m.h}`]),
+    ["off", "Off: no radar window"]]);
 
   for (const id of TEXT) { const el = $("#" + id); if (el) el.value = V[id] ?? ""; }
   for (const id of CHECK) $("#" + id).checked = !!V[id];
@@ -61,6 +64,7 @@ function labels() {
   $$(".only-full").forEach(e => e.style.display = full ? "" : "none");
   $$(".only-win").forEach(e => e.style.display = full ? "none" : "");
   $$(".only-wall").forEach(e => e.style.display = V.mfd_layout === "wall" ? "" : "none");
+  $$(".only-plasma").forEach(e => e.style.display = V.plasma ? "" : "none");
   // The view's shape against the window's: a wide view in a 4:3 window is a thin band.
   const [gw, gh] = V.mode.split("x").map(Number), r = mainRect();
   const off = Math.abs((r.w / r.h) / (gw / gh) - 1) > 0.05;
@@ -85,7 +89,7 @@ function wireFields() {
     const el = $("#" + id); if (!el) continue;
     el.addEventListener("input", () => { V[id] = el.value; labels(); renderWindows(); touch(); });
   }
-  for (const id of CHECK) $("#" + id).addEventListener("change", e => { V[id] = e.target.checked; labels(); touch(); });
+  for (const id of CHECK) $("#" + id).addEventListener("change", e => { V[id] = e.target.checked; labels(); renderWindows(); touch(); });
   $("#main_fullscreen").addEventListener("change", e => { V.main_fullscreen = e.target.value === "1"; labels(); touch(); });
   $$("input[name=role]").forEach(r => r.addEventListener("change", () => { V.role = r.value; labels(); touch(); }));
 }
@@ -104,12 +108,20 @@ function renderPC() {
 // ------------------------------------------------------------ windows and the map
 function visibleWindows() {
   return S.windows_meta.filter(w => V.mfd_layout === "wall" ? !/^mfd\d$/.test(w.sec) : w.sec !== "mfd_wall")
-    .filter(w => w.sec !== "plasma" || V.plasma);
+    .filter(w => !/^mfd/.test(w.sec) || V.mfd_windows !== false)
+    .filter(w => w.sec !== "radar" || V.radar_monitor !== "off")
+    .filter(w => w.sec !== "plasma" || (V.plasma && V.plasma_window !== false));
+}
+// The monitor a window fills ([section] monitor), or null.
+function wholeMonitor(sec) {
+  if (sec !== "radar" || !/^\d+$/.test(V.radar_monitor || "")) return null;
+  return S.monitors.find(m => m.n == V.radar_monitor) || null;
 }
 function renderWindows() {
   const tb = $("#wintable tbody");
   tb.innerHTML = visibleWindows().map(w => {
-    const v = V.windows[w.sec] || {};
+    const v = V.windows[w.sec] || {}, mon = wholeMonitor(w.sec);
+    if (mon) return `<tr><td>${w.title}</td><td colspan="5" class="hint">All of monitor ${mon.n}: ${mon.w} x ${mon.h} at ${mon.x}, ${mon.y}, no border</td></tr>`;
     const f = k => `<input data-sec="${w.sec}" data-k="${k}" value="${v[k] ?? ""}" placeholder="auto">`;
     return `<tr><td>${w.title}</td><td>${f("x")}</td><td>${f("y")}</td><td>${f("w")}</td><td>${f("h")}</td>
       <td><input type="checkbox" data-sec="${w.sec}" data-k="borderless" ${v.borderless === "1" || v.borderless === true ? "checked" : ""}></td></tr>`;
@@ -154,11 +166,11 @@ function drawMap() {
   const SIZE = { radar: turned ? [480, 640] : [640, 480] };
   const set = v => v !== undefined && v !== null && v !== "";
   for (const w of visibleWindows()) {
-    const v = V.windows[w.sec] || {};
+    const v = V.windows[w.sec] || {}, mon = wholeMonitor(w.sec);
     const d = DEF[w.sec] || [0, 0], sz = SIZE[w.sec] || [w.w, w.h];
-    const placed = set(v.x) && set(v.y);
-    const x = placed ? +v.x : area[0] + d[0], y = placed ? +v.y : area[1] + d[1];
-    const ww = set(v.w) ? +v.w : sz[0], hh = set(v.h) ? +v.h : sz[1];
+    const placed = !!mon || (set(v.x) && set(v.y));
+    const x = mon ? mon.x : placed ? +v.x : area[0] + d[0], y = mon ? mon.y : placed ? +v.y : area[1] + d[1];
+    const ww = mon ? mon.w : set(v.w) ? +v.w : sz[0], hh = mon ? mon.h : set(v.h) ? +v.h : sz[1];
     out += `<rect class="win${placed ? "" : " auto"}" x="${x}" y="${y}" width="${ww}" height="${hh}"/>
       <text class="winlabel" x="${x + 6 * k}" y="${y + 16 * k}" style="font-size:${12 * k}px">${w.title}</text>`;
   }
