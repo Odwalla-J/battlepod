@@ -326,6 +326,7 @@ async function ledFind() { ledState(await api("/api/plasma").catch(() => null));
 $("#pl-led-find").addEventListener("click", ledFind);
 $("#pl-led-try").addEventListener("click", () => PL_LAST && ledSend(PL_LAST, "Showing Try it on the LED sign..."));
 $("#pl-led-test").addEventListener("click", () => ledSend(wiringTest(), "Showing the wiring test..."));
+$("#pl-led-boot").addEventListener("click", () => ledSend([0x1B, 0x62], "Playing the boot sequence..."));
 $("#pl-led-all").addEventListener("click", () => ledSend([0x1B, 0x40, 0x1B, 0x78, 1, 0, 0, plWidth() - 1, PL_H - 1], "Lighting every dot..."));
 $("#pl-led-clear").addEventListener("click", () => ledSend([0x1B, 0x40], "Clearing the LED sign..."));
 

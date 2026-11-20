@@ -61,6 +61,11 @@ All notable changes to this project are documented here. The format follows
   Plasma sign page has an **LED sign** card: whether the board is there, and
   buttons that put Try it's sign, a wiring test (frame, diagonal, named
   corners), every dot lit, or nothing on it.
+- **The LED sign boots like a 'Mech**: at power-up, in place of FIRESTORM,
+  REACTOR, SENSORS and WEAPONS each load and come ONLINE in turn, the sign
+  brightening as the reactor comes up, then ALL SYSTEMS NOMINAL; it holds
+  15 s and dissolves away. Anything from the game stops it. `ESC b` plays it
+  again: `plasmatest.py --boot`, or *Boot sequence* on the LED sign card.
 - **Only the screens a cockpit needs**: shim.ini `show = 0` leaves out any
   cockpit window - with the five MFD boards and an LED sign, the MFD and
   sign windows go, and the boards and sign are fed as before. **The radar

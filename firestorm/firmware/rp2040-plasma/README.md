@@ -5,8 +5,17 @@ board (a Waveshare RP2040-Zero, or any RP2040). Windows sees it as a USB
 serial port, "Firestorm Plasma", 1209:0004. It takes the game's own sign
 protocol (`../../docs/RIO.md`, *The plasma sign*), as the shim passes it on
 with every x already moved to the middle of a 128-dot sign (`[plasma] width`
-128), and draws it in orange. At power-up, before any bytes arrive, it shows
-FIRESTORM.
+128), and draws it in orange.
+
+At power-up it boots like a 'Mech: REACTOR, SENSORS and WEAPONS each come
+ONLINE in turn, typed out with their dots ticking over unevenly and a
+spinner turning, then ALL SYSTEMS NOMINAL. It starts dim and the reactor
+brings it up to full brightness. That takes about 15 s; it holds for 15 s
+more, then the text dissolves away, a few dots at a time, and the sign is
+dark. Anything sent to the board stops it at once and clears the sign, so
+the game always wins. `ESC b` (1B 62, not one of the game's commands) plays
+it again: `plasmatest.py --boot`, or *Boot sequence* on the launcher's
+Plasma sign page. Its timings are in `system_up()` and `boot_steps()`.
 
 ## Wiring
 
@@ -46,3 +55,4 @@ the board.
     python plasmatest.py "OSPREY"
     python plasmatest.py --match
     python plasmatest.py --all
+    python plasmatest.py --boot

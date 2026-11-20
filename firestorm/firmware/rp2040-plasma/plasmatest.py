@@ -5,6 +5,7 @@
     python plasmatest.py --match         a name with the match's place and score boxes
     python plasmatest.py --all           every dot lit (wiring and brightness)
     python plasmatest.py --clear
+    python plasmatest.py --boot          the boot sequence again
 
 Finds the board by its USB ids (1209:0004); --port COMn to pick one.
 """
@@ -43,10 +44,13 @@ def main():
     ap.add_argument("--match", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--clear", action="store_true")
+    ap.add_argument("--boot", action="store_true")
     a = ap.parse_args()
 
     out = ESC + b"@"
-    if a.all:
+    if a.boot:
+        out = ESC + b"b"
+    elif a.all:
         out += ESC + b"x\x01" + bytes([0, 0, W - 1, 31])
     elif a.match:
         dx = (W - 112) // 2      # the game's boxes, moved to the middle as the shim moves them

@@ -4,8 +4,8 @@
 // port, "Firestorm Plasma". It takes the bytes the game sends its sign -
 // text as itself, commands after ESC (docs/RIO.md, *The plasma sign*) - as
 // the shim passes them on, every x already moved to the middle of a 128-dot
-// sign, and draws them in orange. Until the first byte comes it shows
-// FIRESTORM, so a board on the bench shows its wiring is right.
+// sign, and draws them in orange. At power-up it plays a 'Mech's boot
+// sequence until the game takes over.
 //
 // Wiring (README.md): R1 G1 B1 R2 G2 B2 on GP2-GP7, A-D on GP8-GP11, CLK
 // GP12, LAT GP13, OE GP14. Build with Earle Philhower's arduino-pico core,
@@ -39,6 +39,8 @@ static const int GREEN_ON = 48;       // and red+green; GREEN_ON / (GREEN_ON + R
 static const int CLK_NOPS = 4;        // slows the clock for long wires; raise it if dots sparkle
 
 static volatile uint8_t dots[H][W];
+static volatile int level = 256;      // brightness, of 256: the boot sequence starts dim
+static bool replay = true;            // the boot sequence, at power-up and on ESC 'b'
 
 // ------------------------------------------------ the sign's drawing, as the shim's (src/ddraw.c)
 
@@ -128,6 +130,7 @@ static void feed(uint8_t c)
     case 0x4B: font = cmd[2]; break;
     case 0x58: rect(cmd[2], cmd[3], cmd[4], cmd[5], false, 1); break;
     case 0x78: rect(cmd[3], cmd[4], cmd[5], cmd[6], true, cmd[2] != 0); break;
+    case 0x62: replay = true; break;    // ours: the boot sequence again
     }
     have = 0;
   } else if (c == 0x1B) {
@@ -142,6 +145,131 @@ static void feed(const char *s)
   while (*s) feed((uint8_t)*s++);
 }
 
+// ------------------------------------------------ the boot sequence
+
+// At power-up, and on ESC 'b' (not one of the game's), the sign comes up as
+// a 'Mech does: a terminal of 21 columns by 4 lines, each system typed out
+// and its dots ticking over unevenly, a spinner turning, until it is
+// ONLINE. It starts dim, on emergency power, and the reactor brings it up
+// to full. Anything on the port stops it and clears the sign: the game
+// always wins.
+
+static int spin_col = -1, spin_line;  // where the spinner turns while a system loads
+
+static void put(int col, int line, char ch) { glyph(1 + 6 * col, 8 * line, ch, false); }
+static void put(int col, int line, const char *s) { while (*s) put(col++, line, *s++); }
+static uint32_t rnd(uint32_t lo, uint32_t hi) { return lo + rp2040.hwrand32() % (hi - lo + 1); }
+
+// Waits ms, turning the spinner; false as soon as the port has something.
+static bool pause(uint32_t ms)
+{
+  static const char spin[] = "|/-\\";
+  static int turn;
+  uint32_t start = millis(), last = start;
+  while (millis() - start < ms) {
+    if (Serial.available()) return false;
+    if (spin_col >= 0 && millis() - last >= 90) {
+      last = millis();
+      put(spin_col, spin_line, spin[turn++ & 3]);
+    }
+  }
+  return true;
+}
+
+#define STEP(x) do { if (!(x)) return false; } while (0)
+
+static bool type(int col, int line, const char *s, uint32_t lo, uint32_t hi)
+{
+  for (; *s; s++) {
+    put(col++, line, *s);
+    STEP(pause(rnd(lo, hi)));
+  }
+  return true;
+}
+
+// One system: its name, dots to column 13, ONLINE at 15-20. `weight` (4 is
+// ordinary) stretches its loading; the reactor's flickers the sign's
+// brightness as it climbs.
+static bool system_up(int line, const char *name, int weight, bool reactor)
+{
+  STEP(type(0, line, name, 30, 70));
+  spin_col = 20;
+  spin_line = line;
+  for (int col = strlen(name); col < 14; col++) {
+    uint32_t ms = rnd(80, 220) * weight / 4;
+    if (rnd(0, 3) == 0) ms += rnd(400, 900) * weight / 4;   // a stall
+    if (reactor) level = 48 + 8 * col + rnd(0, 32);
+    STEP(pause(ms));
+    put(col, line, '.');
+  }
+  STEP(pause(rnd(200, 500)));
+  spin_col = -1;
+  put(15, line, "ONLINE");
+  if (reactor)
+    while (level < 256) {
+      level = min(256, level + 6);
+      STEP(pause(12));
+    }
+  STEP(pause(120));
+  put(15, line, "      ");
+  STEP(pause(80));
+  put(15, line, "ONLINE");
+  return pause(rnd(300, 500));
+}
+
+// Every dot goes dark, a few at a time in a random order, over about ms.
+static bool dissolve(uint32_t ms)
+{
+  static uint16_t order[W * H];
+  const int n = W * H, steps = ms / 15;
+  for (int i = 0; i < n; i++) order[i] = i;
+  for (int i = n - 1; i > 0; i--) {
+    int j = rnd(0, i);
+    uint16_t t = order[i];
+    order[i] = order[j];
+    order[j] = t;
+  }
+  for (int s = 0, i = 0; s < steps; s++) {
+    for (int end = (s + 1) * n / steps; i < end; i++) dots[order[i] / W][order[i] % W] = 0;
+    STEP(pause(15));
+  }
+  return true;
+}
+
+static bool boot_steps()
+{
+  STEP(pause(400));
+  for (int i = 0; i < 3; i++) {         // a cursor, waiting
+    put(0, 0, '_');
+    STEP(pause(250));
+    put(0, 0, ' ');
+    STEP(pause(250));
+  }
+  STEP(system_up(0, "REACTOR", 6, true));
+  STEP(system_up(1, "SENSORS", 4, false));
+  STEP(system_up(2, "WEAPONS", 5, false));
+  STEP(pause(600));
+  STEP(type(1, 3, "ALL SYSTEMS NOMINAL", 25, 45));
+  for (int i = 0; i < 3; i++) {
+    STEP(pause(350));
+    rect(0, 24, W - 1, H - 1, true, 0);
+    STEP(pause(200));
+    put(1, 3, "ALL SYSTEMS NOMINAL");
+  }
+  STEP(pause(15000));
+  return dissolve(1500);
+}
+
+static void boot()
+{
+  feed("\x1B@");
+  level = 48;
+  bool done = boot_steps();
+  spin_col = -1;
+  level = 256;
+  if (!done) feed("\x1B@");
+}
+
 // ------------------------------------------------ core 0: the port
 
 void setup()
@@ -150,17 +278,17 @@ void setup()
   TinyUSBDevice.setManufacturerDescriptor("BattleTech Preservation");
   TinyUSBDevice.setProductDescriptor(NAME);
   Serial.begin(9600);
-  // FIRESTORM, large, centred on the sign as the game centres a name
-  feed("\x1B@\x1BK\x04\x1BQ\x08\x1BR\x13" "FIRESTORM");
 }
 
 void loop()
 {
-  static bool fed;
+  if (replay) {
+    replay = false;
+    boot();
+  }
   while (Serial.available()) {
     int c = Serial.read();
     if (c < 0) break;
-    if (!fed) { fed = true; feed("\x1B@"); }
     feed((uint8_t)c);
   }
 }
@@ -216,9 +344,9 @@ void loop1()
   for (int y = 0; y < H / 2; y++) {
     shift(y, true, lit);
     show(y);
-    lit = GREEN_ON;
+    lit = GREEN_ON * level >> 8;
     shift(y, false, lit);
     show(y);
-    lit = RED_ON;
+    lit = RED_ON * level >> 8;
   }
 }
